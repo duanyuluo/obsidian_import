@@ -17,6 +17,8 @@ metadata_rules:
           "Dad Law": "Law of World"
           "Parlez à Max": "Talk to Max"
           "Parlez à Lili": "Talk to Lili"
+          "Wisdom of Life": "Love of Life"
+          "Physics Score": "Law of World"
   Date:
     actions:
       - type: rename

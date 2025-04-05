@@ -90,8 +90,8 @@ import logging
 
 # Define log level constants first
 LOG_LEVEL_ERROR = "ERR"
-LOG_LEVEL_ACTION = "ACT"
 LOG_LEVEL_FLOW = "FLW"
+LOG_LEVEL_ACTION = "ACT"
 LOG_LEVEL_DEBUG = "DBG"
 
 class TaskType(Enum):
@@ -150,7 +150,7 @@ def debug(message, level, config):
     log_file_handle = config.get("log_file_handle")
     if log_file_handle and LOG_LEVELS[level] >= log_level:
         try:
-            log_file_handle.write(f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {log_message}\n")
+            log_file_handle.write(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {log_message}\n")
             log_file_handle.flush()  # 确保日志立即写入文件
         except Exception as e:
             print(f"❌ Error writing to log file: {e}")
@@ -344,6 +344,8 @@ def read_metadata_lines(md_file, metadata_rules, config):
         # Step 2: Check for a match in metadata_rules
         metadata_start = -1
         for i, line in enumerate(first_10_lines):
+            if line.strip().startswith("#"):  # Skip comment lines
+                continue
             key, sep, value = line.partition(": ")
             if sep and key.strip() in metadata_rules:
                 metadata_start = i
@@ -404,14 +406,19 @@ def process_metadata_line(line, metadata_rules, config):
     actions = rule.get("actions", [])
 
     if any(action.get("type") == "delete" for action in actions):
-        task = {"type": TaskType.TRANSFORM_METADATA.value, "key": key, "action": {"type": "delete"}}
+        task = {
+            "type": TaskType.TRANSFORM_METADATA.value,
+            "key": key,
+            "action": {"type": "delete"},
+            "file": config.get("current_file")  # 添加文件路径
+        }
         debug(f"➕ Added metadata task: {task}", LOG_LEVEL_ACTION, config)
         return [task]
 
     if any(action.get("type") == "retain" for action in actions) and len(actions) == 1:
         return []
 
-    tasks = apply_metadata_actions(key, value, actions)
+    tasks = apply_metadata_actions(key, value, actions, config)
     
     # Log each metadata task that was generated
     for task in tasks:
@@ -419,7 +426,7 @@ def process_metadata_line(line, metadata_rules, config):
         
     return tasks
 
-def apply_metadata_actions(key, value, actions):
+def apply_metadata_actions(key, value, actions, config):
     """
     对键值对应用元数据操作（如 modify_value、append_after、rename）。
 
@@ -474,7 +481,8 @@ def apply_metadata_actions(key, value, actions):
             "key": key,
             "original_line": f"{key}: {value}",
             "new_line": f"{current_key}: {current_value}",
-            "action": {"type": "replace"}
+            "action": {"type": "replace"},
+            "file": config.get("current_file")  # Ensure 'file' key is included
         })
     return tasks
 
@@ -542,6 +550,7 @@ def scan_markdown_file(file, root, directory, resource_dir, metadata_rules, stat
 
     # Step 1: Add metadata mapping tasks
     debug("🛠️ 1.Generating metadata transformation tasks...", LOG_LEVEL_DEBUG, config)  # Changed to DEBUG
+    config["current_file"] = str(original_path)  # 设置当前文件路径
     metadata_tasks = generate_metadata_tasks(original_path, metadata_rules, config)
     tasks.extend(metadata_tasks)
     stats["metadata_tasks"] += len(metadata_tasks)
@@ -735,7 +744,8 @@ def execute_task(task, config, path_mapping):
             if task["attachment_dir"].exists():
                 shutil.rmtree(task["attachment_dir"])
     except Exception as e:
-        debug(f"❌ 执行任务 {task['type']} 时出错: {e}", LOG_LEVEL_ERROR, config)
+        debug(f"❌ 执行任务 {task['type']} 时出错 - 任务详情: {task}", LOG_LEVEL_ERROR, config)
+        debug(f"   错误信息: {e}", LOG_LEVEL_ERROR, config)
         if config.get("stop_on_error", False):
             raise
 
@@ -843,6 +853,8 @@ def transform_metadata(lines, metadata_rules, config):
     debug("Starting metadata transformation...", LOG_LEVEL_DEBUG, config)
     transformed_lines = []
     for line in lines:
+        if line.strip().startswith('#'):
+            continue
         key, sep, value = line.partition(": ")
         if not sep:  # Skip lines that are not metadata
             transformed_lines.append(line)
@@ -930,7 +942,10 @@ def map_metadata(file, metadata_rules, config):
         config (dict, optional): 配置字典
     """
     try:
-        debug(f"📋 Metadata rules: {metadata_rules}", LOG_LEVEL_DEBUG, config)
+        rule_summary = {key: {"rules_found": len(value.get("actions", [])), 
+                    "types": [a.get("type") for a in value.get("actions", [])]} 
+                for key, value in metadata_rules.items()}
+        debug(f"📋 Metadata rules summary: {rule_summary}", LOG_LEVEL_DEBUG, config)
         with open(file, "r") as f:
             content = f.readlines()
 
@@ -999,8 +1014,8 @@ def parse_arguments():
     )
     parser.add_argument("directory", help="The directory to process", nargs="?")
     parser.add_argument("--config", help="Path to the configuration file", default="obsidian_import.yaml")
-    parser.add_argument("--log", action="store_true", 
-                        help="Enable logging to a default log file (obsidian_import.log in the current directory)")
+    parser.add_argument("--log", nargs="?", const=LOG_LEVEL_ACTION, choices=LOG_LEVELS.keys(),
+                        help="Enable logging to a file with an optional log level (default: ACT if no level is provided)")
     parser.add_argument("--verbose", nargs="?", const=LOG_LEVEL_ACTION, choices=LOG_LEVELS.keys(),
                         help="Enable verbose output with an optional stdout level (default: ACT if no level is provided)")
     parser.add_argument("--reset-log", action="store_true", help="Clear the log file before starting")
@@ -1020,6 +1035,7 @@ def load_and_configure(args):
 
     # Apply command-line overrides
     config["log_file"] = "obsidian_import.log" if args.log else None
+    config["log_level"] = args.log if args.log else LOG_LEVEL_ACTION
     config["stdout_level"] = args.verbose if args.verbose else LOG_LEVEL_FLOW
     config["reset_log"] = args.reset_log
 

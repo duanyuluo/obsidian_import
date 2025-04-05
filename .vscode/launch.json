@@ -9,7 +9,7 @@
             "python": "/Users/dyl/.venv/obsidian_import/bin/python",  // ✅ 明确解释器
             "args": [
                 "/Users/dyl/Downloads/Export-4706b40b-533f-4cec-a61d-0169446d2937/Day One 9324820122fb49798e2c094e9b9faab2",
-                "--log",
+                "--log=DBG",
                 "--reset-log"
             ],
             "console": "integratedTerminal"
