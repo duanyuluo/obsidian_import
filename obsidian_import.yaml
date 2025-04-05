@@ -19,7 +19,8 @@ metadata_rules:
           "Parlez à Lili": "Talk to Lili"
   Date:
     actions:
-      - type: retain
+      - type: rename
+        new_name: date
   Last edited time:
     actions:
       - type: delete

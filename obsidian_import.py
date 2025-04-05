@@ -82,6 +82,13 @@ from urllib.parse import quote, unquote
 import yaml
 import datetime  # Added for timestamping log entries
 import shutil  # For getting terminal size
+import logging
+
+# Define log level constants first
+LOG_LEVEL_ERROR = "ERR"
+LOG_LEVEL_ACTION = "ACT"
+LOG_LEVEL_FLOW = "FLW"
+LOG_LEVEL_DEBUG = "DBG"
 
 class TaskType(Enum):
     """Enum defining different types of tasks that can be performed during the import process."""
@@ -91,6 +98,87 @@ class TaskType(Enum):
     TRANSFORM_METADATA = "TRANSFORM_METADATA"
     MAP_METADATA = "MAP_METADATA"
     CLEANUP = "CLEANUP"
+
+# 定义日志级别
+LOG_LEVELS = {
+    LOG_LEVEL_ERROR: logging.ERROR,       # 异常：流程中逻辑冲突和程序异常
+    LOG_LEVEL_ACTION: 25,                 # 动作：添加任务，执行动作等实质性动作
+    LOG_LEVEL_FLOW: 15,                   # 流程：函数入口点和步骤类函数
+    LOG_LEVEL_DEBUG: logging.DEBUG,       # 调试：详细调试信息
+}
+
+# 注册自定义日志级别
+logging.addLevelName(25, "ACTION")
+logging.addLevelName(15, "FLOW")
+
+def debug(message, level=LOG_LEVEL_FLOW, config=None):
+    """
+    统一的调试和日志记录函数。
+
+    参数:
+        message (str): 要记录的消息
+        level (str): 消息的级别（error, action, flow, debug）
+        config (dict): 配置字典，控制日志和标准输出的级别
+    """
+    if config is None:
+        config = {}
+
+    # 获取日志和标准输出的级别
+    log_level = LOG_LEVELS.get(config.get("log_level", LOG_LEVEL_ACTION), logging.NOTSET)
+    stdout_level = LOG_LEVELS.get(config.get("stdout_level", LOG_LEVEL_FLOW), logging.NOTSET)
+
+    # 为不同日志级别定义emoji
+    level_emojis = {
+        LOG_LEVEL_ERROR: "❌ ",
+        LOG_LEVEL_ACTION: "⚡ ",
+        LOG_LEVEL_FLOW: "🔄 ",
+        LOG_LEVEL_DEBUG: "🔍 "
+    }
+    
+    # 创建日志级别名称映射
+    level_names = {
+        logging.ERROR: LOG_LEVEL_ERROR,
+        25: LOG_LEVEL_ACTION, 
+        15: LOG_LEVEL_FLOW,
+        logging.DEBUG: LOG_LEVEL_DEBUG
+    }
+    
+    # 初始化日志记录器
+    logger = logging.getLogger("obsidian_import")
+    if not logger.handlers:
+        logger.setLevel(logging.DEBUG)
+
+        # 添加 StreamHandler（标准输出）
+        if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
+            stream_handler = logging.StreamHandler()
+            # 使用自定义格式化器来显示缩短的日志级别名称
+            stream_handler.setFormatter(logging.Formatter(f"%(levelname)s: {level_emojis.get(level, '')}%(message)s"))
+            # 重写format方法来使用我们自己的级别名称
+            original_format = stream_handler.formatter.format
+            def custom_format(record):
+                # 将日志级别数字替换为我们的短名称
+                if record.levelno in level_names:
+                    record.levelname = level_names[record.levelno]
+                return original_format(record)
+            stream_handler.formatter.format = custom_format
+            logger.addHandler(stream_handler)
+
+        # 添加 FileHandler（日志文件）
+        if config.get("log_file") and not any(isinstance(h, logging.FileHandler) for h in logger.handlers):
+            file_handler = logging.FileHandler(config["log_file"])
+            file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))  # 带时间戳
+            # 同样为文件处理器自定义format方法
+            original_file_format = file_handler.formatter.format
+            def custom_file_format(record):
+                if record.levelno in level_names:
+                    record.levelname = level_names[record.levelno]
+                return original_file_format(record)
+            file_handler.formatter.format = custom_file_format
+            logger.addHandler(file_handler)
+
+    # 如果启用了日志记录且消息级别符合要求
+    if LOG_LEVELS[level] >= log_level:
+        logger.log(LOG_LEVELS[level], message)
 
 #############################################################
 # PROGRESS BAR FUNCTION
@@ -183,32 +271,6 @@ def load_config(config_path):
         print(f"Error loading configuration file {config_path}: {e}")
         return {}
 
-def trace_debug(message, config):
-    """
-    如果启用了 --debug，则打印调试信息。
-
-    参数:
-        message (str): 要记录的调试信息
-        config (dict): 配置字典
-    """
-    if config.get("debug", False):  # 使用 --debug 参数控制调试输出
-        print(f"🐞 调试: {message}")
-        log_debug(f"🐞 调试: {message}", config)
-
-def log_debug(message, config):
-    """
-    如果配置中启用了 log_debug，则将操作记录到文件。
-
-    参数:
-        message (str): 要记录的操作信息
-        config (dict): 包含日志设置的配置字典
-    """
-    if config and config.get("log_debug", False):
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        log_file = Path(config.get("log_file", "obsidian_import.log"))
-        with open(log_file, "a") as f:
-            f.write(f"[{timestamp}] 日志: {message}\n")
-
 #############################################################
 # METADATA VALIDATION AND TASK GENERATION
 #############################################################
@@ -241,7 +303,7 @@ def validate_metadata_mappings(lines, metadata_rules, unmapped_metadata):
                 value_mapping = action.get("value_mapping", {})
                 if value.strip() not in value_mapping and value.strip() not in unmapped_metadata.get(key, set()):
                     unmapped_metadata.setdefault(key, set()).add(value.strip())
-    trace_debug(f"验证元数据映射完成: {unmapped_metadata}", None)
+    debug(f"验证元数据映射完成: {unmapped_metadata}", LOG_LEVEL_DEBUG, None)
 
 def print_progress(step, total_steps):
     """
@@ -269,7 +331,7 @@ def read_metadata_lines(md_file, metadata_rules, config):
         with open(md_file, "r") as f:
             content = f.readlines()
 
-        trace_debug(f"Reading metadata lines from {md_file}", config)
+        debug(f"Reading metadata lines from {md_file}", LOG_LEVEL_FLOW, config)
 
         # Step 1: Read the first 10 lines
         first_10_lines = content[:10]
@@ -283,7 +345,7 @@ def read_metadata_lines(md_file, metadata_rules, config):
                 break
 
         if metadata_start == -1:
-            trace_debug(f"No metadata match found in the first 10 lines of {md_file}", config)
+            debug(f"No metadata match found in the first 10 lines of {md_file}", LOG_LEVEL_DEBUG, config)
             return []
 
         # Step 3: Expand the metadata region
@@ -304,10 +366,10 @@ def read_metadata_lines(md_file, metadata_rules, config):
             if ": " in line:  # Include lines with "key: value" format
                 metadata_lines.append(line)
 
-        trace_debug(f"从 {md_file} 提取的元数据行: {metadata_lines}", config)
+        debug(f"从 {md_file} 提取的元数据行: {metadata_lines}", LOG_LEVEL_DEBUG, config)
         return metadata_lines
     except Exception as e:
-        trace_debug(f"Error reading metadata from {md_file}: {e}", config)
+        debug(f"Error reading metadata from {md_file}: {e}", LOG_LEVEL_ERROR, config)
         return []
 
 def process_metadata_line(line, metadata_rules, config):
@@ -325,12 +387,12 @@ def process_metadata_line(line, metadata_rules, config):
     if not sep:
         return []
 
-    trace_debug(f"开始处理元数据行……: {line}", config)
+    debug(f"开始处理元数据行……: {line}", LOG_LEVEL_FLOW, config)
 
     value = value.strip()
     matching_keys = [rule_key for rule_key in metadata_rules if key.startswith(rule_key)]
     if not matching_keys:
-        trace_debug(f"⚠️ Warning: No rule defined for metadata key '{key}'.", config)
+        debug(f"⚠️ Warning: No rule defined for metadata key '{key}'.", LOG_LEVEL_ERROR, config)
         return []
 
     rule = metadata_rules[matching_keys[0]]
@@ -338,7 +400,7 @@ def process_metadata_line(line, metadata_rules, config):
 
     if any(action.get("type") == "delete" for action in actions):
         task = {"type": TaskType.TRANSFORM_METADATA.value, "key": key, "action": {"type": "delete"}}
-        trace_debug(f"➕ Added metadata task: {task}", config)
+        debug(f"➕ Added metadata task: {task}", LOG_LEVEL_ACTION, config)
         return [task]
 
     if any(action.get("type") == "retain" for action in actions) and len(actions) == 1:
@@ -348,7 +410,7 @@ def process_metadata_line(line, metadata_rules, config):
     
     # Log each metadata task that was generated
     for task in tasks:
-        trace_debug(f"➕ Added metadata task: {task}", config)
+        debug(f"➕ Added metadata task: {task}", LOG_LEVEL_ACTION, config)
         
     return tasks
 
@@ -467,36 +529,36 @@ def scan_markdown_file(file, root, directory, resource_dir, metadata_rules, stat
         tasks (list): 用于收集生成任务的列表
         config (dict): 配置字典
     """
-    trace_debug("------------------------------------------------------------", config)
-    trace_debug(f"🔍 Processing Markdown file: {file}", config)
+    debug("------------------------------------------------------------", LOG_LEVEL_FLOW, config)
+    debug(f"🔍 Processing Markdown file: {file}", LOG_LEVEL_FLOW, config)
 
     original_path = Path(root) / file
     stats["markdown_files"] += 1
 
     # Step 1: Add metadata mapping tasks
-    trace_debug("🛠️ 1.Generating metadata transformation tasks...", config)
+    debug("🛠️ 1.Generating metadata transformation tasks...", LOG_LEVEL_FLOW, config)
     metadata_tasks = generate_metadata_tasks(original_path, metadata_rules, config)
     tasks.extend(metadata_tasks)
     stats["metadata_tasks"] += len(metadata_tasks)
 
     # Step 2: Process attachments
-    trace_debug("📦 2.Processing attachments...", config)
+    debug("📦 2.Processing attachments...", LOG_LEVEL_FLOW, config)
     path_mapping = scan_attachments(original_path, directory, resource_dir, stats, tasks, config)
 
     # Step 3: Update references in Markdown file
-    trace_debug("🔗 3.Updating references in Markdown file...", config)
+    debug("🔗 3.Updating references in Markdown file...", LOG_LEVEL_FLOW, config)
     if path_mapping:  # Only add the task if path_mapping is not empty
         update_task = {"type": TaskType.UPDATE_ATTACH_REF.value, "file": original_path, "path_mapping": path_mapping}
-        trace_debug(f"➕ Added update references task: {update_task}", config)
+        debug(f"➕ Added update references task: {update_task}", LOG_LEVEL_ACTION, config)
         tasks.append(update_task)
 
     # Step 4: Rename Markdown file
-    trace_debug("✏️ 4.Renaming Markdown file...", config)
+    debug("✏️ 4.Renaming Markdown file...", LOG_LEVEL_FLOW, config)
     rename_task = generate_rename_markdown_task(original_path, directory, tasks, config)
     if rename_task:
-        trace_debug(f"➕ Added rename task: {rename_task}", config)
+        debug(f"➕ Added rename task: {rename_task}", LOG_LEVEL_ACTION, config)
 
-    trace_debug(f"✅ 5.Finished processing Markdown file: {file}", config)
+    debug(f"✅ 5.Finished processing Markdown file: {file}", LOG_LEVEL_FLOW, config)
 
 def scan_attachments(original_path, directory, resource_dir, stats, tasks, config):
     """
@@ -519,7 +581,7 @@ def scan_attachments(original_path, directory, resource_dir, stats, tasks, confi
     
     if uid_match:
         uid = uid_match.group(1)
-        trace_debug(f"📌 Found UID in Markdown filename: {uid}", config)
+        debug(f"📌 Found UID in Markdown filename: {uid}", LOG_LEVEL_DEBUG, config)
         
         # Look for an attachment directory with matching UID in its name
         parent_dir = original_path.parent
@@ -528,18 +590,18 @@ def scan_attachments(original_path, directory, resource_dir, stats, tasks, confi
         for pot_dir in potential_dirs:
             if uid in pot_dir.name:
                 attachment_dir = pot_dir
-                trace_debug(f"📂 Found matching attachment directory: {attachment_dir}", config)
+                debug(f"📂 Found matching attachment directory: {attachment_dir}", LOG_LEVEL_DEBUG, config)
                 break
     
     # If no attachment directory with matching UID is found, assume no attachments
     if not attachment_dir:
-        trace_debug(f"ℹ️ No attachment directory found for {original_path.name}, skipping attachment processing", config)
+        debug(f"ℹ️ No attachment directory found for {original_path.name}, skipping attachment processing", LOG_LEVEL_DEBUG, config)
         return {}  # Return empty mapping as there are no attachments
 
     path_mapping = {}
     if attachment_dir.exists():
         attachment_count = sum(1 for _ in attachment_dir.iterdir())
-        trace_debug(f"📄 Found {attachment_count} attachments in {attachment_dir}", config)
+        debug(f"📄 Found {attachment_count} attachments in {attachment_dir}", LOG_LEVEL_DEBUG, config)
         
         for i, attachment in enumerate(attachment_dir.iterdir(), start=1):
             stats["attachments"] += 1
@@ -554,7 +616,7 @@ def scan_attachments(original_path, directory, resource_dir, stats, tasks, confi
             new_path = str(new_attachment_path.relative_to(directory)).replace("\\", "/")
             path_mapping[old_path] = new_path
             move_task = {"type": TaskType.MOVE_ATTACHMENT.value, "src": attachment, "dest": new_attachment_path}
-            trace_debug(f"➕ Added move attachment task: {move_task}", config)
+            debug(f"➕ Added move attachment task: {move_task}", LOG_LEVEL_ACTION, config)
             tasks.append(move_task)
     
     return path_mapping
@@ -597,14 +659,13 @@ def scan_directory(directory, attachment_output_path, metadata_rules, config):
     返回:
         tuple: 包含任务列表、统计信息字典和未映射元数据字典的元组
     """
-    trace_debug("🚀 Starting directory scan...", config)
-    print("Scanning directory for Markdown files...")
+    debug("🚀 Starting directory scan...", LOG_LEVEL_FLOW, config)
     tasks = []
     stats, unmapped_metadata, used_names = initialize_scan_stats()
     resource_dir = Path(directory) / attachment_output_path
     resource_dir.mkdir(exist_ok=True)
 
-    trace_debug(f"📂 Resource directory created at: {resource_dir}", config)
+    debug(f"📂 Resource directory created at: {resource_dir}", LOG_LEVEL_FLOW, config)
 
     # 获取所有 Markdown 文件数量用于进度条
     if not config.get("debug", False):
@@ -628,10 +689,10 @@ def scan_directory(directory, attachment_output_path, metadata_rules, config):
                     current_file += 1
                     display_progress_bar(current_file, total_files, f"扫描: {file}")
                 
-                trace_debug(f"📄 Found Markdown file: {file}", config)
+                debug(f"📄 Found Markdown file: {file}", LOG_LEVEL_FLOW, config)
                 scan_markdown_file(file, root, directory, resource_dir, metadata_rules, stats, tasks, config)
 
-    trace_debug("✅ Directory scan completed.", config)
+    debug("✅ Directory scan completed.", LOG_LEVEL_FLOW, config)
     print_progress(1, 3)  # Scanning is step 1 of 3
     return tasks, stats, unmapped_metadata
 
@@ -653,26 +714,26 @@ def execute_task(task, config, path_mapping):
     """
     try:
         if task["type"] == TaskType.RENAME_MD.value:
-            trace_debug(f"✏️ 重命名文件: {task['src']} -> {task['dest']}", config)
+            debug(f"✏️ 重命名文件: {task['src']} -> {task['dest']}", LOG_LEVEL_ACTION, config)
             Path(task["src"]).rename(task["dest"])
             path_mapping[str(task["src"])] = str(task["dest"])
         elif task["type"] == TaskType.MOVE_ATTACHMENT.value:
-            trace_debug(f"📦 移动附件: {task['src']} -> {task['dest']}", config)
+            debug(f"📦 移动附件: {task['src']} -> {task['dest']}", LOG_LEVEL_ACTION, config)
             Path(task["src"]).rename(task["dest"])
         elif task["type"] == TaskType.UPDATE_ATTACH_REF.value:
-            trace_debug(f"🔗 更新文件中的引用: {task['file']}", config)
+            debug(f"🔗 更新文件中的引用: {task['file']}", LOG_LEVEL_ACTION, config)
             update_references_in_markdown(task["file"], task["path_mapping"], config.get("metadata_rules", {}), config)
         elif task["type"] == TaskType.TRANSFORM_METADATA.value:
-            trace_debug(f"🛠️ 转换文件中的元数据: {task['file']}", config)
+            debug(f"🛠️ 转换文件中的元数据: {task['file']}", LOG_LEVEL_ACTION, config)
             map_metadata(task["file"], config.get("metadata_rules", {}), config)
         elif task["type"] == TaskType.CLEANUP.value:
-            trace_debug(f"🗑️ 清理文件: {task['md_file']}", config)
+            debug(f"🗑️ 清理文件: {task['md_file']}", LOG_LEVEL_ACTION, config)
             if task["md_file"].exists():
                 task["md_file"].unlink()
             if task["attachment_dir"].exists():
                 shutil.rmtree(task["attachment_dir"])
     except Exception as e:
-        trace_debug(f"❌ 执行任务 {task['type']} 时出错: {e}", config)
+        debug(f"❌ 执行任务 {task['type']} 时出错: {e}", LOG_LEVEL_ERROR, config)
         if config.get("stop_on_error", False):
             raise
 
@@ -684,7 +745,7 @@ def execute_tasks(tasks, config):
         tasks (list): 要执行的任务列表
         config (dict): 配置字典
     """
-    trace_debug("🚀 Starting task execution...", config)
+    debug("🚀 Starting task execution...", LOG_LEVEL_FLOW, config)
     path_mapping = {}
     total_tasks = len(tasks)
     
@@ -708,10 +769,10 @@ def execute_tasks(tasks, config):
         if not config.get("debug", False):
             display_progress_bar(i, total_tasks, task_desc)
         
-        trace_debug(f"⚙️ Executing task {i}/{total_tasks}: {task['type']}", config)
+        debug(f"⚙️ Executing task {i}/{total_tasks}: {task['type']}", LOG_LEVEL_FLOW, config)
         execute_task(task, config, path_mapping)
     
-    trace_debug("✅ Task execution completed.", config)
+    debug("✅ Task execution completed.", LOG_LEVEL_FLOW, config)
 
 #############################################################
 # METADATA TRANSFORMATION
@@ -733,14 +794,14 @@ def apply_action(key, value, action, config):
     返回:
         tuple: (新键, 新值) 或 (None, None)（如果元数据应被删除）
     """
-    trace_debug(f"🔧 Applying action '{action.get('type')}' on key '{key}' with value '{value}'", config)
+    debug(f"🔧 Applying action '{action.get('type')}' on key '{key}' with value '{value}'", LOG_LEVEL_DEBUG, config)
     action_type = action.get("type")
     if action_type == "delete":
-        trace_debug(f"🗑️ Deleting metadata key: {key}", config)
+        debug(f"🗑️ Deleting metadata key: {key}", LOG_LEVEL_ACTION, config)
         return None, None  # Indicate deletion
     elif action_type == "rename":
         new_name = action.get("new_name", key)
-        trace_debug(f"✏️ Renaming key '{key}' to '{new_name}'", config)
+        debug(f"✏️ Renaming key '{key}' to '{new_name}'", LOG_LEVEL_ACTION, config)
         return new_name, value
     elif action_type == "modify_value":
         value_mapping = action.get("value_mapping", {})
@@ -749,23 +810,23 @@ def apply_action(key, value, action, config):
 
         # Apply direct value mapping
         if new_value in value_mapping:
-            trace_debug(f"🔄 Mapping value '{new_value}' to '{value_mapping[new_value]}'", config)
+            debug(f"🔄 Mapping value '{new_value}' to '{value_mapping[new_value]}'", LOG_LEVEL_ACTION, config)
             new_value = value_mapping[new_value]
 
         # Apply regex-based transformations
         for regex, replacement in regex_mapping:
             if re.search(regex, new_value):
-                trace_debug(f"🔍 Regex '{regex}' matched. Replacing '{new_value}' with '{replacement}'", config)
+                debug(f"🔍 Regex '{regex}' matched. Replacing '{new_value}' with '{replacement}'", LOG_LEVEL_ACTION, config)
                 new_value = re.sub(regex, replacement, new_value)
                 break
 
         return key, new_value
     elif action_type == "append_after":
         content = action.get("content", "")
-        trace_debug(f"➕ Appending '{content}' to value '{value.strip()}'", config)
+        debug(f"➕ Appending '{content}' to value '{value.strip()}'", LOG_LEVEL_ACTION, config)
         return key, f"{value.strip()}{content}"
     else:
-        trace_debug(f"⚠️ Unsupported action type '{action_type}' for key '{key}'", config)
+        debug(f"⚠️ Unsupported action type '{action_type}' for key '{key}'", LOG_LEVEL_FLOW, config)
         return key, value
 
 def transform_metadata(lines, metadata_rules, config):
@@ -780,7 +841,7 @@ def transform_metadata(lines, metadata_rules, config):
     返回:
         list: 转换后的行
     """
-    trace_debug("Starting metadata transformation...", config)
+    debug("Starting metadata transformation...", LOG_LEVEL_FLOW, config)
     transformed_lines = []
     for line in lines:
         key, sep, value = line.partition(": ")
@@ -788,27 +849,27 @@ def transform_metadata(lines, metadata_rules, config):
             transformed_lines.append(line)
             continue
 
-        trace_debug(f"🔍 Processing metadata: {key}: {value.strip()}", config)
+        debug(f"🔍 Processing metadata: {key}: {value.strip()}", LOG_LEVEL_DEBUG, config)
         rule = metadata_rules.get(key)
         if not rule:  # No rule, retain the line
-            trace_debug(f"⚠️ No rule found for key: {key}", config)
+            debug(f"⚠️ No rule found for key: {key}", LOG_LEVEL_ERROR, config)
             transformed_lines.append(line)
             continue
 
         actions = rule.get("actions", [])
-        trace_debug(f"🔧 Found {len(actions)} actions for key: {key}", config)
+        debug(f"🔧 Found {len(actions)} actions for key: {key}", LOG_LEVEL_DEBUG, config)
 
         current_key, current_value = key, value.strip()
         for i, action in enumerate(actions):
-            trace_debug(f"🔧 Applying action {i + 1}: {action.get('type')}", config)
+            debug(f"🔧 Applying action {i + 1}: {action.get('type')}", LOG_LEVEL_DEBUG, config)
             current_key, current_value = apply_action(current_key, current_value, action, config)
             if current_key is None:  # If deleted, stop processing further actions
-                trace_debug(f"🗑️ Key deleted: {key}", config)
+                debug(f"🗑️ Key deleted: {key}", LOG_LEVEL_ACTION, config)
                 break
 
         if current_key is not None:  # If not deleted, add the transformed metadata
             transformed_line = f"{current_key}: {current_value}"
-            trace_debug(f"✅ Transformed: {transformed_line}", config)
+            debug(f"✅ Transformed: {transformed_line}", LOG_LEVEL_ACTION, config)
             transformed_lines.append(transformed_line)
 
     return transformed_lines
@@ -827,8 +888,8 @@ def update_references_in_markdown(file, path_mapping, metadata_rules, config):
         with open(file, "r") as f:
             content = f.readlines()
 
-        trace_debug(f"Updating references and metadata in: {file}", config)
-        trace_debug(f"Path mapping: {path_mapping}", config)
+        debug(f"Updating references and metadata in: {file}", LOG_LEVEL_FLOW, config)
+        debug(f"Path mapping: {path_mapping}", LOG_LEVEL_DEBUG, config)
 
         # Process metadata transformation
         metadata_end_index = 0
@@ -849,17 +910,16 @@ def update_references_in_markdown(file, path_mapping, metadata_rules, config):
                 if old_path in line:
                     encoded_new_path = quote(new_path)
                     line = line.replace(old_path, encoded_new_path)
-                    trace_debug(f"Line {i}:\n   Original: {original_line.strip()}\n   Updated:  {line.strip()}", config)
-                    log_debug(f"Updated reference in {file} line {i}: {old_path} -> {encoded_new_path}", config)
+                    debug(f"Line {i}:\n   Original: {original_line.strip()}\n   Updated:  {line.strip()}", LOG_LEVEL_DEBUG, config)
+                    debug(f"Updated reference in {file} line {i}: {old_path} -> {encoded_new_path}", LOG_LEVEL_ACTION, config)
             updated_content.append(line)
 
         with open(file, "w") as f:
             f.writelines(updated_content)
 
-        trace_debug(f"更新文件 {file} 中的引用完成", config)
+        debug(f"更新文件 {file} 中的引用完成", LOG_LEVEL_ACTION, config)
     except Exception as e:
-        trace_debug(f"❌ Error updating references in {file}: {e}", config)
-        log_debug(f"ERROR updating references in {file}: {e}", config)
+        debug(f"❌ Error updating references in {file}: {e}", LOG_LEVEL_ERROR, config)
 
 def map_metadata(file, metadata_rules, config):
     """
@@ -871,7 +931,7 @@ def map_metadata(file, metadata_rules, config):
         config (dict, optional): 配置字典
     """
     try:
-        trace_debug(f"📋 Metadata rules: {metadata_rules}", config)
+        debug(f"📋 Metadata rules: {metadata_rules}", LOG_LEVEL_DEBUG, config)
         with open(file, "r") as f:
             content = f.readlines()
 
@@ -884,21 +944,20 @@ def map_metadata(file, metadata_rules, config):
         metadata_lines = content[:metadata_end_index]
         transformed_metadata = transform_metadata(metadata_lines, metadata_rules, config)
 
-        trace_debug(f"Metadata changes for {file}:", config)
+        debug(f"Metadata changes for {file}:", LOG_LEVEL_DEBUG, config)
         for original, transformed in zip(metadata_lines, transformed_metadata):
             if original.strip() != transformed.strip():
-                trace_debug(f"   Original: {original.strip()}\n   Transformed: {transformed.strip()}", config)
-                log_debug(f"Transformed metadata in {file}: {original.strip()} -> {transformed.strip()}", config)
+                debug(f"   Original: {original.strip()}\n   Transformed: {transformed.strip()}", LOG_LEVEL_DEBUG, config)
+                debug(f"Transformed metadata in {file}: {original.strip()} -> {transformed.strip()}", LOG_LEVEL_ACTION, config)
 
         content = transformed_metadata + content[metadata_end_index:]
 
         with open(file, "w") as f:
             f.writelines(content)
 
-        trace_debug(f"映射文件 {file} 的元数据完成", config)
+        debug(f"映射文件 {file} 的元数据完成", LOG_LEVEL_ACTION, config)
     except Exception as e:
-        trace_debug(f"❌ Error mapping metadata in {file}: {e}", config)
-        log_debug(f"ERROR mapping metadata in {file}: {e}", config)
+        debug(f"❌ Error mapping metadata in {file}: {e}", LOG_LEVEL_ERROR, config)
 
 #############################################################
 # MAIN FUNCTION
@@ -942,7 +1001,12 @@ def parse_arguments():
     parser.add_argument("directory", help="The directory to process", nargs="?")
     parser.add_argument("--config", help="Path to the configuration file", default="obsidian_import.yaml")
     parser.add_argument("--log", help="Path to the log file (enables logging if specified)")
-    parser.add_argument("--debug", action="store_true", help="Enable debug output (overrides config)")
+    parser.add_argument("--log-level", choices=LOG_LEVELS.keys(), default=LOG_LEVEL_ACTION,
+                        help=f"Set the log level (default: {LOG_LEVEL_ACTION})")
+    parser.add_argument("--verbose", action="store_true", help=f"Enable verbose output (default: {LOG_LEVEL_FLOW} level)")
+    parser.add_argument("--stdout-level", choices=LOG_LEVELS.keys(), default=LOG_LEVEL_FLOW,
+                        help=f"Set the stdout level (default: {LOG_LEVEL_FLOW})")
+    parser.add_argument("--debug", action="store_true", help=f"Enable debug output (equivalent to {LOG_LEVEL_DEBUG} level)")
     parser.add_argument("--reset-log", action="store_true", help="Clear the log file before starting")
     return parser
 
@@ -953,12 +1017,11 @@ def reset_log_file(config):
     参数:
         config (dict): 包含日志设置的配置字典
     """
-    if config.get("reset_log", False) and config.get("log_debug", False):
-        log_file = Path(config.get("log_file", "obsidian_import.log"))
-        with open(log_file, "w") as f:
+    if config.get("reset_log", False) and config.get("log_file"):
+        with open(config["log_file"], "w") as f:
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            f.write(f"[{timestamp}] 日志: Log file reset by user request\n")
-        trace_debug(f"Log file reset at {log_file}", config)
+            f.write(f"[{timestamp}] Log file reset by user request\n")
+        debug(f"Log file reset at {config['log_file']}", LOG_LEVEL_ACTION, config)
 
 def load_and_configure(args):
     """
@@ -973,11 +1036,14 @@ def load_and_configure(args):
     config = load_config(args.config)
 
     # Apply command-line overrides
-    if args.log:
-        config["log_debug"] = True
-        config["log_file"] = args.log
-    config["debug"] = args.debug  # Use --debug argument to control debug output
-    config["reset_log"] = args.reset_log  # Store the reset-log flag
+    config["log_file"] = args.log if args.log else None
+    config["log_level"] = args.log_level
+    config["stdout_level"] = LOG_LEVEL_DEBUG if args.debug else args.stdout_level
+    config["reset_log"] = args.reset_log
+
+    # 如果启用了 --verbose，则设置 stdout_level 为 flow
+    if args.verbose:
+        config["stdout_level"] = LOG_LEVEL_FLOW
 
     return config
 
@@ -1044,7 +1110,7 @@ def print_final_statistics(tasks, execution_time, config):
     print(f"Execution time: {execution_time:.2f} seconds")
 
     if config.get("log_debug", False):
-        log_debug(f"Task execution completed in {execution_time:.2f} seconds", config)
+        debug(f"Task execution completed in {execution_time:.2f} seconds", LOG_LEVEL_ACTION, config)
 
 def main():
     """
@@ -1074,14 +1140,14 @@ def main():
     # Reset the log file if requested
     reset_log_file(config)
     
-    trace_debug("🚀 Starting Obsidian Import Tool...", config)
+    debug("🚀 Starting Obsidian Import Tool...", LOG_LEVEL_FLOW, config)
 
     directory = args.directory
     attachment_output_path = config.get("attachment_output_path", "Resource")
     metadata_rules = config.get("metadata_rules", {})
 
-    if config.get("log_debug", False):
-        log_debug(f"Starting obsidian_import.py on {directory}", config)
+    if config.get("log_file"):
+        debug(f"Starting obsidian_import.py on {directory}", LOG_LEVEL_ACTION, config)
 
     # Step 1: Scan the directory
     tasks, stats, unmapped_metadata = scan_directory(directory, attachment_output_path, metadata_rules, config)
@@ -1091,19 +1157,18 @@ def main():
 
     # Step 3: Prompt for confirmation
     if not confirm_execution():
-        log_debug("Operation canceled by the user.", config)
-        print("Operation canceled.")
+        debug("Operation canceled by the user.", LOG_LEVEL_ACTION, config)
         return
 
     # Step 4: Execute tasks
-    print("Executing tasks...")
+    debug("Executing tasks...", LOG_LEVEL_FLOW, config)
     start_time = time.time()
     execute_tasks(tasks, config)
     end_time = time.time()
 
     # Step 5: Print final statistics
     print_final_statistics(tasks, end_time - start_time, config)
-    trace_debug("✅ Obsidian Import Tool completed.", None)
+    debug("✅ Obsidian Import Tool completed.", LOG_LEVEL_FLOW, config)
 
 
 if __name__ == "__main__":
