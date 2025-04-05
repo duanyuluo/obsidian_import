@@ -257,6 +257,8 @@ def process_metadata_line(line, metadata_rules, config):
     if not sep:
         return []
 
+    trace_debug(f"开始处理元数据行……: {line}", config)
+
     value = value.strip()
     matching_keys = [rule_key for rule_key in metadata_rules if key.startswith(rule_key)]
     if not matching_keys:
@@ -267,13 +269,20 @@ def process_metadata_line(line, metadata_rules, config):
     actions = rule.get("actions", [])
 
     if any(action.get("type") == "delete" for action in actions):
-        return [{"type": TaskType.TRANSFORM_METADATA.value, "key": key, "action": {"type": "delete"}}]
+        task = {"type": TaskType.TRANSFORM_METADATA.value, "key": key, "action": {"type": "delete"}}
+        trace_debug(f"➕ Added metadata task: {task}", config)
+        return [task]
 
     if any(action.get("type") == "retain" for action in actions) and len(actions) == 1:
         return []
 
-    trace_debug(f"处理元数据行完成: {line}", config)
-    return apply_metadata_actions(key, value, actions)
+    tasks = apply_metadata_actions(key, value, actions)
+    
+    # Log each metadata task that was generated
+    for task in tasks:
+        trace_debug(f"➕ Added metadata task: {task}", config)
+        
+    return tasks
 
 def apply_metadata_actions(key, value, actions):
     """
@@ -306,8 +315,15 @@ def apply_metadata_actions(key, value, actions):
                 modified = True
             else:
                 for regex, replacement in regex_mapping:
-                    if re.search(regex, current_value):
-                        current_value = re.sub(regex, replacement, current_value)
+                    match = re.search(regex, current_value)
+                    if match:
+                        # Check if the regex contains capturing groups
+                        if match.groups():
+                            # Use the regex replacement with capture groups
+                            current_value = re.sub(regex, replacement, current_value)
+                        else:
+                            # No capture groups, use replacement as default
+                            current_value = replacement
                         modified = True
                         break
         elif action_type == "append_after":
@@ -350,8 +366,8 @@ def generate_metadata_tasks(md_file, metadata_rules, config):
 #############################################################
 
 # Functions in this section handle scanning directories and planning tasks.
-# These include `initialize_scan_stats`, `process_markdown_file`,
-# `process_attachments`, `rename_markdown_file`, and `scan_directory`.
+# These include `initialize_scan_stats`, `scan_markdown_file`,
+# `scan_attachments`, `generate_rename_markdown_task`, and `scan_directory`.
 
 def initialize_scan_stats():
     """
@@ -369,7 +385,7 @@ def initialize_scan_stats():
     }, {}, set()
 
 
-def process_markdown_file(file, root, directory, resource_dir, metadata_rules, stats, tasks, config):
+def scan_markdown_file(file, root, directory, resource_dir, metadata_rules, stats, tasks, config):
     """
     处理单个 Markdown 文件。
 
@@ -392,30 +408,29 @@ def process_markdown_file(file, root, directory, resource_dir, metadata_rules, s
     # Step 1: Add metadata mapping tasks
     trace_debug("🛠️ 1.Generating metadata transformation tasks...", config)
     metadata_tasks = generate_metadata_tasks(original_path, metadata_rules, config)
-    for task in metadata_tasks:
-        trace_debug(f"➕ Added metadata task: {task}", config)
     tasks.extend(metadata_tasks)
     stats["metadata_tasks"] += len(metadata_tasks)
 
     # Step 2: Process attachments
     trace_debug("📦 2.Processing attachments...", config)
-    path_mapping = process_attachments(original_path, directory, resource_dir, stats, tasks, config)
+    path_mapping = scan_attachments(original_path, directory, resource_dir, stats, tasks, config)
 
     # Step 3: Update references in Markdown file
     trace_debug("🔗 3.Updating references in Markdown file...", config)
-    update_task = {"type": TaskType.UPDATE_ATTACH_REF.value, "file": original_path, "path_mapping": path_mapping}
-    trace_debug(f"➕ Added update references task: {update_task}", config)
-    tasks.append(update_task)
+    if path_mapping:  # Only add the task if path_mapping is not empty
+        update_task = {"type": TaskType.UPDATE_ATTACH_REF.value, "file": original_path, "path_mapping": path_mapping}
+        trace_debug(f"➕ Added update references task: {update_task}", config)
+        tasks.append(update_task)
 
     # Step 4: Rename Markdown file
     trace_debug("✏️ 4.Renaming Markdown file...", config)
-    rename_task = rename_markdown_file(original_path, directory, tasks, config)
+    rename_task = generate_rename_markdown_task(original_path, directory, tasks, config)
     if rename_task:
         trace_debug(f"➕ Added rename task: {rename_task}", config)
 
     trace_debug(f"✅ 5.Finished processing Markdown file: {file}", config)
 
-def process_attachments(original_path, directory, resource_dir, stats, tasks, config):
+def scan_attachments(original_path, directory, resource_dir, stats, tasks, config):
     """
     处理给定 Markdown 文件的附件。
 
@@ -430,12 +445,37 @@ def process_attachments(original_path, directory, resource_dir, stats, tasks, co
     返回:
         dict: 旧附件路径到新路径的映射
     """
-    attachment_dir = original_path.with_suffix("")  # Assume attachments are in a folder named after the Markdown file
+    # Extract UID from the Markdown filename
+    uid_match = re.search(r" (\w{32})\.md$", str(original_path))
+    attachment_dir = None
+    
+    if uid_match:
+        uid = uid_match.group(1)
+        trace_debug(f"📌 Found UID in Markdown filename: {uid}", config)
+        
+        # Look for an attachment directory with matching UID in its name
+        parent_dir = original_path.parent
+        potential_dirs = [d for d in parent_dir.iterdir() if d.is_dir()]
+        
+        for pot_dir in potential_dirs:
+            if uid in pot_dir.name:
+                attachment_dir = pot_dir
+                trace_debug(f"📂 Found matching attachment directory: {attachment_dir}", config)
+                break
+    
+    # If no attachment directory with matching UID is found, assume no attachments
+    if not attachment_dir:
+        trace_debug(f"ℹ️ No attachment directory found for {original_path.name}, skipping attachment processing", config)
+        return {}  # Return empty mapping as there are no attachments
+
     path_mapping = {}
     if attachment_dir.exists():
+        attachment_count = sum(1 for _ in attachment_dir.iterdir())
+        trace_debug(f"📄 Found {attachment_count} attachments in {attachment_dir}", config)
+        
         for i, attachment in enumerate(attachment_dir.iterdir(), start=1):
             stats["attachments"] += 1
-            if len(list(attachment_dir.iterdir())) == 1:
+            if attachment_count == 1:
                 # Single attachment: Use Markdown file name
                 new_attachment_name = f"{original_path.stem}{attachment.suffix}"
             else:
@@ -448,10 +488,10 @@ def process_attachments(original_path, directory, resource_dir, stats, tasks, co
             move_task = {"type": TaskType.MOVE_ATTACHMENT.value, "src": attachment, "dest": new_attachment_path}
             trace_debug(f"➕ Added move attachment task: {move_task}", config)
             tasks.append(move_task)
+    
     return path_mapping
 
-
-def rename_markdown_file(original_path, directory, tasks, config):
+def generate_rename_markdown_task(original_path, directory, tasks, config):
     """
     通过移除 UID 并解决冲突来重命名 Markdown 文件。
 
@@ -503,7 +543,7 @@ def scan_directory(directory, attachment_output_path, metadata_rules, config):
         for file in files:
             if file.endswith(".md"):
                 trace_debug(f"📄 Found Markdown file: {file}", config)
-                process_markdown_file(file, root, directory, resource_dir, metadata_rules, stats, tasks, config)
+                scan_markdown_file(file, root, directory, resource_dir, metadata_rules, stats, tasks, config)
 
     trace_debug("✅ Directory scan completed.", config)
     print_progress(1, 3)  # Scanning is step 1 of 3
