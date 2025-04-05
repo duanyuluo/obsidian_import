@@ -93,6 +93,73 @@ class TaskType(Enum):
     CLEANUP = "CLEANUP"
 
 #############################################################
+# PROGRESS BAR FUNCTION
+#############################################################
+def display_progress_bar(current, total, description="", width=None):
+    """
+    显示进度条，格式为: 2/123 [####----] 33% ETA 01:23 当前处理内容
+    
+    参数:
+        current (int): 当前进度
+        total (int): 总任务数
+        description (str): 当前处理的描述
+        width (int, optional): 进度条宽度，默认为终端宽度的一半
+    """
+    if not width:
+        try:
+            terminal_width = shutil.get_terminal_size().columns
+            width = min(50, terminal_width // 2)  # 进度条宽度为终端宽度的一半，但最大为50
+        except:
+            width = 40  # 默认宽度
+    
+    # 计算完成百分比
+    percent = current / total
+    
+    # 计算ETA (预计剩余时间)
+    if not hasattr(display_progress_bar, "start_time"):
+        display_progress_bar.start_time = time.time()
+    
+    elapsed = time.time() - display_progress_bar.start_time
+    if current > 0:
+        eta_seconds = (elapsed / current) * (total - current)
+        eta_min, eta_sec = divmod(int(eta_seconds), 60)
+        eta_str = f"{eta_min:02d}:{eta_sec:02d}"
+    else:
+        eta_str = "--:--"
+    
+    # 构建进度条字符串
+    completed = int(width * percent)
+    progress_bar = "#" * completed + "-" * (width - completed)
+    
+    # 限制描述长度以适应终端
+    try:
+        max_desc_len = max(10, shutil.get_terminal_size().columns - width - 40)  # 为其他部分保留空间
+    except:
+        max_desc_len = 50  # 默认长度
+        
+    if len(description) > max_desc_len:
+        description = description[:max_desc_len-3] + "..."
+    
+    # 构建完整的进度显示
+    progress_str = f"{current}/{total} [{progress_bar}] {percent*100:.0f}% ETA {eta_str} {description}"
+    
+    # 清除当前行并显示进度
+    sys.stdout.write("\r" + " " * len(getattr(display_progress_bar, "last_line", "")))
+    sys.stdout.write("\r" + progress_str)
+    sys.stdout.flush()
+    
+    # 保存最后显示的行，以便下次清除
+    display_progress_bar.last_line = progress_str
+    
+    # 如果完成，添加换行
+    if current == total:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        if hasattr(display_progress_bar, "start_time"):
+            delattr(display_progress_bar, "start_time")
+
+
+#############################################################
 # CONFIGURATION AND LOGGING FUNCTIONS
 #############################################################
 
@@ -1041,66 +1108,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-def display_progress_bar(current, total, description="", width=None):
-    """
-    显示进度条，格式为: 2/123 [####----] 33% ETA 01:23 当前处理内容
-    
-    参数:
-        current (int): 当前进度
-        total (int): 总任务数
-        description (str): 当前处理的描述
-        width (int, optional): 进度条宽度，默认为终端宽度的一半
-    """
-    if not width:
-        try:
-            terminal_width = shutil.get_terminal_size().columns
-            width = min(50, terminal_width // 2)  # 进度条宽度为终端宽度的一半，但最大为50
-        except:
-            width = 40  # 默认宽度
-    
-    # 计算完成百分比
-    percent = current / total
-    
-    # 计算ETA (预计剩余时间)
-    if not hasattr(display_progress_bar, "start_time"):
-        display_progress_bar.start_time = time.time()
-    
-    elapsed = time.time() - display_progress_bar.start_time
-    if current > 0:
-        eta_seconds = (elapsed / current) * (total - current)
-        eta_min, eta_sec = divmod(int(eta_seconds), 60)
-        eta_str = f"{eta_min:02d}:{eta_sec:02d}"
-    else:
-        eta_str = "--:--"
-    
-    # 构建进度条字符串
-    completed = int(width * percent)
-    progress_bar = "#" * completed + "-" * (width - completed)
-    
-    # 限制描述长度以适应终端
-    try:
-        max_desc_len = max(10, shutil.get_terminal_size().columns - width - 40)  # 为其他部分保留空间
-    except:
-        max_desc_len = 50  # 默认长度
-        
-    if len(description) > max_desc_len:
-        description = description[:max_desc_len-3] + "..."
-    
-    # 构建完整的进度显示
-    progress_str = f"{current}/{total} [{progress_bar}] {percent*100:.0f}% ETA {eta_str} {description}"
-    
-    # 清除当前行并显示进度
-    sys.stdout.write("\r" + " " * len(getattr(display_progress_bar, "last_line", "")))
-    sys.stdout.write("\r" + progress_str)
-    sys.stdout.flush()
-    
-    # 保存最后显示的行，以便下次清除
-    display_progress_bar.last_line = progress_str
-    
-    # 如果完成，添加换行
-    if current == total:
-        sys.stdout.write("\n")
-        sys.stdout.flush()
-        if hasattr(display_progress_bar, "start_time"):
-            delattr(display_progress_bar, "start_time")
