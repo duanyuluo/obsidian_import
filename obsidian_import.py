@@ -84,6 +84,10 @@ import datetime  # Added for timestamping log entries
 import shutil  # For getting terminal size
 import logging
 
+#############################################################
+# LOGGING FUNCTION
+#############################################################
+
 # Define log level constants first
 LOG_LEVEL_ERROR = "ERR"
 LOG_LEVEL_ACTION = "ACT"
@@ -134,56 +138,65 @@ def debug(message, level, config):
         LOG_LEVEL_FLOW: "🔄 ",
         LOG_LEVEL_DEBUG: "🔍 "
     }
-    
-    # 创建日志级别名称映射
-    level_names = {
-        logging.ERROR: LOG_LEVEL_ERROR,
-        15: LOG_LEVEL_ACTION, 
-        25: LOG_LEVEL_FLOW,
-        logging.DEBUG: LOG_LEVEL_DEBUG
-    }
-    
-    # 初始化日志记录器
-    logger = logging.getLogger("obsidian_import")
-    if not logger.handlers:
-        logger.setLevel(logging.DEBUG)
 
-        # 添加 StreamHandler（标准输出）
-        if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
-            stream_handler = logging.StreamHandler()
-            # 使用自定义格式化器来显示缩短的日志级别名称
-            stream_handler.setFormatter(logging.Formatter(f"%(levelname)s: {level_emojis.get(level, '')}%(message)s"))
-            # 重写format方法来使用我们自己的级别名称
-            original_format = stream_handler.formatter.format
-            def custom_format(record):
-                # 将日志级别数字替换为我们的短名称
-                if record.levelno in level_names:
-                    record.levelname = level_names[record.levelno]
-                return original_format(record)
-            stream_handler.formatter.format = custom_format
-            logger.addHandler(stream_handler)
+    # 构建日志消息
+    log_message = f"{level_emojis.get(level, '')}{message}"
 
-        # 添加 FileHandler（日志文件）
-        if config.get("log_file") and not any(isinstance(h, logging.FileHandler) for h in logger.handlers):
-            file_handler = logging.FileHandler(config["log_file"])
-            file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))  # 带时间戳
-            # 同样为文件处理器自定义format方法
-            original_file_format = file_handler.formatter.format
-            def custom_file_format(record):
-                if record.levelno in level_names:
-                    record.levelname = level_names[record.levelno]
-                return original_file_format(record)
-            file_handler.formatter.format = custom_file_format
-            logger.addHandler(file_handler)
+    # 打印到标准输出
+    if LOG_LEVELS[level] >= stdout_level:
+        print(log_message)
 
-    # 如果启用了日志记录且消息级别符合要求
-    if LOG_LEVELS[level] >= log_level:
-        logger.log(LOG_LEVELS[level], message)
+    # 写入日志文件
+    log_file_handle = config.get("log_file_handle")
+    if log_file_handle and LOG_LEVELS[level] >= log_level:
+        try:
+            log_file_handle.write(f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {log_message}\n")
+            log_file_handle.flush()  # 确保日志立即写入文件
+        except Exception as e:
+            print(f"❌ Error writing to log file: {e}")
 
+def initialize_log_file(config):
+    """
+    初始化日志文件。如果启用了 --reset 参数，则清空日志文件。
+    如果启用了 --log 参数但未指定文件名，则使用默认文件名。
+
+    参数:
+        config (dict): 包含日志设置的配置字典
+    """
+    if config.get("log") and not config.get("log_file"):
+        config["log_file"] = "obsidian_import.log"
+
+    if config.get("reset_log", False) and config.get("log_file"):
+        try:
+            if config.get("reset_log"):
+                config["log_file_handle"] = open(config["log_file"], "w")  # Overwrite mode
+                print(f"✅ Log file {config['log_file']} reset successfully.")
+            else:
+                config["log_file_handle"] = open(config["log_file"], "a")  # Append mode
+                print(f"✅ Log file {config['log_file']} opened for appending.")
+            debug("Log file reset by user request", LOG_LEVEL_ACTION, config)
+        except Exception as e:
+            print(f"❌ Error resetting log file: {e}")
+
+def close_log_file(config):
+    """
+    关闭日志文件句柄。
+
+    参数:
+        config (dict): 配置字典
+    """
+    log_file_handle = config.get("log_file_handle")
+    if log_file_handle:
+        try:
+            log_file_handle.close()
+            print(f"✅ Log file {config['log_file']} closed successfully.")
+        except Exception as e:
+            print(f"❌ Error closing log file: {e}")
+            
 #############################################################
 # PROGRESS BAR FUNCTION
 #############################################################
-def display_progress_bar(current, total, description="", width=None):
+def display_progress_bar(current, total, description=""):
     """
     显示进度条，格式为: XXXX: XXXX [####----] 33% ETA 01:23 当前任务提示
 
@@ -194,7 +207,7 @@ def display_progress_bar(current, total, description="", width=None):
         width (int, optional): 终端总宽度，默认为终端宽度
     """
     try:
-        terminal_width = shutil.get_terminal_size().columns
+        terminal_width = min(100, shutil.get_terminal_size().columns)
     except:
         terminal_width = 80  # 默认宽度
 
@@ -202,9 +215,9 @@ def display_progress_bar(current, total, description="", width=None):
     left_width = 10  # 左侧 "XXXX: XXXX" 的宽度
     progress_bar_width = 20  # 进度条宽度
     percent_eta_width = 15  # 百分比和 ETA 的宽度 ("33% ETA 01:23")
-    description_width = terminal_width - left_width - progress_bar_width - percent_eta_width - 5  # 预留空格
+    description_width = min(20, terminal_width - left_width - progress_bar_width - percent_eta_width - 10)  # 预留空格
 
-    # 限制描述长度
+    # 限制描述长度并添加省略号
     if len(description) > description_width:
         description = description[:description_width - 3] + "..."
 
@@ -230,6 +243,8 @@ def display_progress_bar(current, total, description="", width=None):
 
     # 构建完整的进度显示
     progress_str = f"{current:4}/{total:<4} [{progress_bar}] {percent_str} {eta_str} {description}"
+    if len(progress_str) > terminal_width:
+        progress_str = progress_str[:terminal_width - 3] + "..."
 
     # 清除当前行并显示进度
     sys.stdout.write("\r" + " " * terminal_width)  # 清除整行
@@ -304,16 +319,6 @@ def validate_metadata_mappings(lines, metadata_rules, unmapped_metadata):
                 if value.strip() not in value_mapping and value.strip() not in unmapped_metadata.get(key, set()):
                     unmapped_metadata.setdefault(key, set()).add(value.strip())
     debug(f"验证元数据映射完成: {unmapped_metadata}", LOG_LEVEL_DEBUG, None)
-
-def print_progress(step, total_steps):
-    """
-    打印当前步骤的进度。
-
-    参数:
-        step (int): 当前步骤编号
-        total_steps (int): 总步骤数
-    """
-    print(f"第 {step}/{total_steps} 步已完成。")
 
 def read_metadata_lines(md_file, metadata_rules, config):
     """
@@ -659,7 +664,6 @@ def scan_directory(directory, attachment_output_path, metadata_rules, config):
     返回:
         tuple: 包含任务列表、统计信息字典和未映射元数据字典的元组
     """
-    debug("🚀 Starting directory scan...", LOG_LEVEL_FLOW, config)
     tasks = []
     stats, unmapped_metadata, used_names = initialize_scan_stats()
     resource_dir = Path(directory) / attachment_output_path
@@ -692,8 +696,6 @@ def scan_directory(directory, attachment_output_path, metadata_rules, config):
                 debug(f"📄 Found Markdown file: {file}", LOG_LEVEL_DEBUG, config)  # Changed to DEBUG
                 scan_markdown_file(file, root, directory, resource_dir, metadata_rules, stats, tasks, config)
 
-    debug("✅ Directory scan completed.", LOG_LEVEL_DEBUG, config)  # Changed to DEBUG
-    print_progress(1, 3)  # Scanning is step 1 of 3
     return tasks, stats, unmapped_metadata
 
 #############################################################
@@ -745,7 +747,6 @@ def execute_tasks(tasks, config):
         tasks (list): 要执行的任务列表
         config (dict): 配置字典
     """
-    debug("🚀 Starting task execution...", LOG_LEVEL_FLOW, config)
     path_mapping = {}
     total_tasks = len(tasks)
     
@@ -770,9 +771,7 @@ def execute_tasks(tasks, config):
             display_progress_bar(i, total_tasks, task_desc)
         
         debug(f"⚙️ Executing task {i}/{total_tasks}: {task['type']}", LOG_LEVEL_DEBUG, config)
-        execute_task(task, config, path_mapping)
-    
-    debug("✅ Task execution completed.", LOG_LEVEL_FLOW, config)
+        execute_task(task, config, path_mapping)    
 
 #############################################################
 # METADATA TRANSFORMATION
@@ -1007,19 +1006,6 @@ def parse_arguments():
     parser.add_argument("--reset-log", action="store_true", help="Clear the log file before starting")
     return parser
 
-def reset_log_file(config):
-    """
-    如果配置中启用了重置日志，则清空日志文件。
-
-    参数:
-        config (dict): 包含日志设置的配置字典
-    """
-    if config.get("reset_log", False) and config.get("log_file"):
-        with open(config["log_file"], "w") as f:
-            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            f.write(f"[{timestamp}] Log file reset by user request\n")
-        debug(f"Log file reset at {config['log_file']}", LOG_LEVEL_ACTION, config)
-
 def load_and_configure(args):
     """
     从文件加载配置并应用命令行参数覆盖。
@@ -1034,7 +1020,7 @@ def load_and_configure(args):
 
     # Apply command-line overrides
     config["log_file"] = "obsidian_import.log" if args.log else None
-    config["stdout_level"] = args.verbose if args.verbose else LOG_LEVEL_ACTION
+    config["stdout_level"] = args.verbose if args.verbose else LOG_LEVEL_FLOW
     config["reset_log"] = args.reset_log
 
     return config
@@ -1127,41 +1113,46 @@ def main():
     if not args.directory:
         parser.error("the following arguments are required: directory")
 
-    config = load_and_configure(args)
-    
-    # Reset the log file if requested
-    reset_log_file(config)
-    
-    debug("🚀 Starting Obsidian Import Tool...", LOG_LEVEL_FLOW, config)
+    try:
+        config = load_and_configure(args)
+        
+        # Initialize the log file if requested
+        initialize_log_file(config)
+        
+        debug("🚀 Starting Obsidian Import Tool...", LOG_LEVEL_FLOW, config)
 
-    directory = args.directory
-    attachment_output_path = config.get("attachment_output_path", "Resource")
-    metadata_rules = config.get("metadata_rules", {})
+        directory = args.directory
+        attachment_output_path = config.get("attachment_output_path", "Resource")
+        metadata_rules = config.get("metadata_rules", {})
 
-    if config.get("log_file"):
-        debug(f"Starting obsidian_import.py on {directory}", LOG_LEVEL_ACTION, config)
+        if config.get("log_file"):
+            debug(f"Starting obsidian_import.py on {directory}", LOG_LEVEL_ACTION, config)
 
-    # Step 1: Scan the directory
-    tasks, stats, unmapped_metadata = scan_directory(directory, attachment_output_path, metadata_rules, config)
+        # Step 1: Scan the directory
+        debug("🚀 Starting directory scan...", LOG_LEVEL_FLOW, config)
+        tasks, stats, unmapped_metadata = scan_directory(directory, attachment_output_path, metadata_rules, config)
+        debug("✅ Directory scan completed.", LOG_LEVEL_FLOW, config)  # Changed to DEBUG
 
-    # Step 2: Display statistics
-    print_statistics(stats, unmapped_metadata, tasks)
+        # Step 2: Display statistics
+        print_statistics(stats, unmapped_metadata, tasks)
 
-    # Step 3: Prompt for confirmation
-    if not confirm_execution():
-        debug("Operation canceled by the user.", LOG_LEVEL_ACTION, config)
-        return
+        # Step 3: Prompt for confirmation
+        if not confirm_execution():
+            debug("Operation canceled by the user.", LOG_LEVEL_ACTION, config)
+            return
 
-    # Step 4: Execute tasks
-    debug("Executing tasks...", LOG_LEVEL_FLOW, config)
-    start_time = time.time()
-    execute_tasks(tasks, config)
-    end_time = time.time()
+        # Step 4: Execute tasks
+        debug("🚀 Starting task execution...", LOG_LEVEL_FLOW, config)
+        start_time = time.time()
+        execute_tasks(tasks, config)
+        end_time = time.time()
+        debug("✅ Task execution completed.", LOG_LEVEL_FLOW, config)
 
-    # Step 5: Print final statistics
-    print_final_statistics(tasks, end_time - start_time, config)
-    debug("✅ Obsidian Import Tool completed.", LOG_LEVEL_FLOW, config)
-
+        # Step 5: Print final statistics
+        print_final_statistics(tasks, end_time - start_time, config)
+        debug("✅ Obsidian Import Tool completed.", LOG_LEVEL_FLOW, config)
+    finally:
+        close_log_file(config)
 
 if __name__ == "__main__":
     main()
