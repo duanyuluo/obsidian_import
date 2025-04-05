@@ -102,8 +102,8 @@ class TaskType(Enum):
 # 定义日志级别
 LOG_LEVELS = {
     LOG_LEVEL_ERROR: logging.ERROR,       # 异常：流程中逻辑冲突和程序异常
-    LOG_LEVEL_ACTION: 25,                 # 动作：添加任务，执行动作等实质性动作
-    LOG_LEVEL_FLOW: 15,                   # 流程：函数入口点和步骤类函数
+    LOG_LEVEL_FLOW: 25,                   # 流程：函数入口点和步骤类函数
+    LOG_LEVEL_ACTION: 15,                 # 动作：添加任务，执行动作等实质性动作
     LOG_LEVEL_DEBUG: logging.DEBUG,       # 调试：详细调试信息
 }
 
@@ -111,7 +111,7 @@ LOG_LEVELS = {
 logging.addLevelName(25, "ACTION")
 logging.addLevelName(15, "FLOW")
 
-def debug(message, level=LOG_LEVEL_FLOW, config=None):
+def debug(message, level, config):
     """
     统一的调试和日志记录函数。
 
@@ -138,8 +138,8 @@ def debug(message, level=LOG_LEVEL_FLOW, config=None):
     # 创建日志级别名称映射
     level_names = {
         logging.ERROR: LOG_LEVEL_ERROR,
-        25: LOG_LEVEL_ACTION, 
-        15: LOG_LEVEL_FLOW,
+        15: LOG_LEVEL_ACTION, 
+        25: LOG_LEVEL_FLOW,
         logging.DEBUG: LOG_LEVEL_DEBUG
     }
     
@@ -185,60 +185,60 @@ def debug(message, level=LOG_LEVEL_FLOW, config=None):
 #############################################################
 def display_progress_bar(current, total, description="", width=None):
     """
-    显示进度条，格式为: 2/123 [####----] 33% ETA 01:23 当前处理内容
-    
+    显示进度条，格式为: XXXX: XXXX [####----] 33% ETA 01:23 当前任务提示
+
     参数:
         current (int): 当前进度
         total (int): 总任务数
-        description (str): 当前处理的描述
-        width (int, optional): 进度条宽度，默认为终端宽度的一半
+        description (str): 当前任务的描述
+        width (int, optional): 终端总宽度，默认为终端宽度
     """
-    if not width:
-        try:
-            terminal_width = shutil.get_terminal_size().columns
-            width = min(50, terminal_width // 2)  # 进度条宽度为终端宽度的一半，但最大为50
-        except:
-            width = 40  # 默认宽度
-    
+    try:
+        terminal_width = shutil.get_terminal_size().columns
+    except:
+        terminal_width = 80  # 默认宽度
+
+    # 固定布局宽度
+    left_width = 10  # 左侧 "XXXX: XXXX" 的宽度
+    progress_bar_width = 20  # 进度条宽度
+    percent_eta_width = 15  # 百分比和 ETA 的宽度 ("33% ETA 01:23")
+    description_width = terminal_width - left_width - progress_bar_width - percent_eta_width - 5  # 预留空格
+
+    # 限制描述长度
+    if len(description) > description_width:
+        description = description[:description_width - 3] + "..."
+
     # 计算完成百分比
     percent = current / total
-    
-    # 计算ETA (预计剩余时间)
+    percent_str = f"{percent * 100:3.0f}%"  # 百分比字符串
+
+    # 计算 ETA (预计剩余时间)
     if not hasattr(display_progress_bar, "start_time"):
         display_progress_bar.start_time = time.time()
-    
+
     elapsed = time.time() - display_progress_bar.start_time
     if current > 0:
         eta_seconds = (elapsed / current) * (total - current)
         eta_min, eta_sec = divmod(int(eta_seconds), 60)
-        eta_str = f"{eta_min:02d}:{eta_sec:02d}"
+        eta_str = f"ETA {eta_min:02d}:{eta_sec:02d}"
     else:
-        eta_str = "--:--"
-    
+        eta_str = "ETA --:--"
+
     # 构建进度条字符串
-    completed = int(width * percent)
-    progress_bar = "#" * completed + "-" * (width - completed)
-    
-    # 限制描述长度以适应终端
-    try:
-        max_desc_len = max(10, shutil.get_terminal_size().columns - width - 40)  # 为其他部分保留空间
-    except:
-        max_desc_len = 50  # 默认长度
-        
-    if len(description) > max_desc_len:
-        description = description[:max_desc_len-3] + "..."
-    
+    completed = int(progress_bar_width * percent)
+    progress_bar = "#" * completed + "-" * (progress_bar_width - completed)
+
     # 构建完整的进度显示
-    progress_str = f"{current}/{total} [{progress_bar}] {percent*100:.0f}% ETA {eta_str} {description}"
-    
+    progress_str = f"{current:4}/{total:<4} [{progress_bar}] {percent_str} {eta_str} {description}"
+
     # 清除当前行并显示进度
-    sys.stdout.write("\r" + " " * len(getattr(display_progress_bar, "last_line", "")))
+    sys.stdout.write("\r" + " " * terminal_width)  # 清除整行
     sys.stdout.write("\r" + progress_str)
     sys.stdout.flush()
-    
+
     # 保存最后显示的行，以便下次清除
     display_progress_bar.last_line = progress_str
-    
+
     # 如果完成，添加换行
     if current == total:
         sys.stdout.write("\n")
@@ -331,7 +331,7 @@ def read_metadata_lines(md_file, metadata_rules, config):
         with open(md_file, "r") as f:
             content = f.readlines()
 
-        debug(f"Reading metadata lines from {md_file}", LOG_LEVEL_FLOW, config)
+        debug(f"Reading metadata lines from {md_file}", LOG_LEVEL_DEBUG, config)
 
         # Step 1: Read the first 10 lines
         first_10_lines = content[:10]
@@ -387,7 +387,7 @@ def process_metadata_line(line, metadata_rules, config):
     if not sep:
         return []
 
-    debug(f"开始处理元数据行……: {line}", LOG_LEVEL_FLOW, config)
+    debug(f"开始处理元数据行……: {line}", LOG_LEVEL_DEBUG, config)
 
     value = value.strip()
     matching_keys = [rule_key for rule_key in metadata_rules if key.startswith(rule_key)]
@@ -529,36 +529,36 @@ def scan_markdown_file(file, root, directory, resource_dir, metadata_rules, stat
         tasks (list): 用于收集生成任务的列表
         config (dict): 配置字典
     """
-    debug("------------------------------------------------------------", LOG_LEVEL_FLOW, config)
-    debug(f"🔍 Processing Markdown file: {file}", LOG_LEVEL_FLOW, config)
+    debug("------------------------------------------------------------", LOG_LEVEL_DEBUG, config)
+    debug(f"🔍 Processing Markdown file: {file}", LOG_LEVEL_DEBUG, config)
 
     original_path = Path(root) / file
     stats["markdown_files"] += 1
 
     # Step 1: Add metadata mapping tasks
-    debug("🛠️ 1.Generating metadata transformation tasks...", LOG_LEVEL_FLOW, config)
+    debug("🛠️ 1.Generating metadata transformation tasks...", LOG_LEVEL_DEBUG, config)  # Changed to DEBUG
     metadata_tasks = generate_metadata_tasks(original_path, metadata_rules, config)
     tasks.extend(metadata_tasks)
     stats["metadata_tasks"] += len(metadata_tasks)
 
     # Step 2: Process attachments
-    debug("📦 2.Processing attachments...", LOG_LEVEL_FLOW, config)
+    debug("📦 2.Processing attachments...", LOG_LEVEL_DEBUG, config)  # Changed to DEBUG
     path_mapping = scan_attachments(original_path, directory, resource_dir, stats, tasks, config)
 
     # Step 3: Update references in Markdown file
-    debug("🔗 3.Updating references in Markdown file...", LOG_LEVEL_FLOW, config)
+    debug("🔗 3.Updating references in Markdown file...", LOG_LEVEL_DEBUG, config)  # Changed to DEBUG
     if path_mapping:  # Only add the task if path_mapping is not empty
         update_task = {"type": TaskType.UPDATE_ATTACH_REF.value, "file": original_path, "path_mapping": path_mapping}
         debug(f"➕ Added update references task: {update_task}", LOG_LEVEL_ACTION, config)
         tasks.append(update_task)
 
     # Step 4: Rename Markdown file
-    debug("✏️ 4.Renaming Markdown file...", LOG_LEVEL_FLOW, config)
+    debug("✏️ 4.Renaming Markdown file...", LOG_LEVEL_DEBUG, config)  # Changed to DEBUG
     rename_task = generate_rename_markdown_task(original_path, directory, tasks, config)
     if rename_task:
         debug(f"➕ Added rename task: {rename_task}", LOG_LEVEL_ACTION, config)
 
-    debug(f"✅ 5.Finished processing Markdown file: {file}", LOG_LEVEL_FLOW, config)
+    debug(f"✅ 5.Finished processing Markdown file: {file}", LOG_LEVEL_DEBUG, config)  # Changed to DEBUG
 
 def scan_attachments(original_path, directory, resource_dir, stats, tasks, config):
     """
@@ -665,7 +665,7 @@ def scan_directory(directory, attachment_output_path, metadata_rules, config):
     resource_dir = Path(directory) / attachment_output_path
     resource_dir.mkdir(exist_ok=True)
 
-    debug(f"📂 Resource directory created at: {resource_dir}", LOG_LEVEL_FLOW, config)
+    debug(f"📂 Resource directory created at: {resource_dir}", LOG_LEVEL_DEBUG, config)  # Changed to DEBUG
 
     # 获取所有 Markdown 文件数量用于进度条
     if not config.get("debug", False):
@@ -689,10 +689,10 @@ def scan_directory(directory, attachment_output_path, metadata_rules, config):
                     current_file += 1
                     display_progress_bar(current_file, total_files, f"扫描: {file}")
                 
-                debug(f"📄 Found Markdown file: {file}", LOG_LEVEL_FLOW, config)
+                debug(f"📄 Found Markdown file: {file}", LOG_LEVEL_DEBUG, config)  # Changed to DEBUG
                 scan_markdown_file(file, root, directory, resource_dir, metadata_rules, stats, tasks, config)
 
-    debug("✅ Directory scan completed.", LOG_LEVEL_FLOW, config)
+    debug("✅ Directory scan completed.", LOG_LEVEL_DEBUG, config)  # Changed to DEBUG
     print_progress(1, 3)  # Scanning is step 1 of 3
     return tasks, stats, unmapped_metadata
 
@@ -769,7 +769,7 @@ def execute_tasks(tasks, config):
         if not config.get("debug", False):
             display_progress_bar(i, total_tasks, task_desc)
         
-        debug(f"⚙️ Executing task {i}/{total_tasks}: {task['type']}", LOG_LEVEL_FLOW, config)
+        debug(f"⚙️ Executing task {i}/{total_tasks}: {task['type']}", LOG_LEVEL_DEBUG, config)
         execute_task(task, config, path_mapping)
     
     debug("✅ Task execution completed.", LOG_LEVEL_FLOW, config)
@@ -826,7 +826,7 @@ def apply_action(key, value, action, config):
         debug(f"➕ Appending '{content}' to value '{value.strip()}'", LOG_LEVEL_ACTION, config)
         return key, f"{value.strip()}{content}"
     else:
-        debug(f"⚠️ Unsupported action type '{action_type}' for key '{key}'", LOG_LEVEL_FLOW, config)
+        debug(f"⚠️ Unsupported action type '{action_type}' for key '{key}'", LOG_LEVEL_ERROR, config)
         return key, value
 
 def transform_metadata(lines, metadata_rules, config):
@@ -841,7 +841,7 @@ def transform_metadata(lines, metadata_rules, config):
     返回:
         list: 转换后的行
     """
-    debug("Starting metadata transformation...", LOG_LEVEL_FLOW, config)
+    debug("Starting metadata transformation...", LOG_LEVEL_DEBUG, config)
     transformed_lines = []
     for line in lines:
         key, sep, value = line.partition(": ")
@@ -888,7 +888,7 @@ def update_references_in_markdown(file, path_mapping, metadata_rules, config):
         with open(file, "r") as f:
             content = f.readlines()
 
-        debug(f"Updating references and metadata in: {file}", LOG_LEVEL_FLOW, config)
+        debug(f"Updating references and metadata in: {file}", LOG_LEVEL_DEBUG, config)
         debug(f"Path mapping: {path_mapping}", LOG_LEVEL_DEBUG, config)
 
         # Process metadata transformation
@@ -1000,13 +1000,10 @@ def parse_arguments():
     )
     parser.add_argument("directory", help="The directory to process", nargs="?")
     parser.add_argument("--config", help="Path to the configuration file", default="obsidian_import.yaml")
-    parser.add_argument("--log", help="Path to the log file (enables logging if specified)")
-    parser.add_argument("--log-level", choices=LOG_LEVELS.keys(), default=LOG_LEVEL_ACTION,
-                        help=f"Set the log level (default: {LOG_LEVEL_ACTION})")
-    parser.add_argument("--verbose", action="store_true", help=f"Enable verbose output (default: {LOG_LEVEL_FLOW} level)")
-    parser.add_argument("--stdout-level", choices=LOG_LEVELS.keys(), default=LOG_LEVEL_FLOW,
-                        help=f"Set the stdout level (default: {LOG_LEVEL_FLOW})")
-    parser.add_argument("--debug", action="store_true", help=f"Enable debug output (equivalent to {LOG_LEVEL_DEBUG} level)")
+    parser.add_argument("--log", action="store_true", 
+                        help="Enable logging to a default log file (obsidian_import.log in the current directory)")
+    parser.add_argument("--verbose", nargs="?", const=LOG_LEVEL_ACTION, choices=LOG_LEVELS.keys(),
+                        help="Enable verbose output with an optional stdout level (default: ACT if no level is provided)")
     parser.add_argument("--reset-log", action="store_true", help="Clear the log file before starting")
     return parser
 
@@ -1036,14 +1033,9 @@ def load_and_configure(args):
     config = load_config(args.config)
 
     # Apply command-line overrides
-    config["log_file"] = args.log if args.log else None
-    config["log_level"] = args.log_level
-    config["stdout_level"] = LOG_LEVEL_DEBUG if args.debug else args.stdout_level
+    config["log_file"] = "obsidian_import.log" if args.log else None
+    config["stdout_level"] = args.verbose if args.verbose else LOG_LEVEL_ACTION
     config["reset_log"] = args.reset_log
-
-    # 如果启用了 --verbose，则设置 stdout_level 为 flow
-    if args.verbose:
-        config["stdout_level"] = LOG_LEVEL_FLOW
 
     return config
 
