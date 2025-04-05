@@ -1,0 +1,97 @@
+# Configuration file for obsidian_import.py
+
+# Directory where attachments will be consolidated
+attachment_output_path: Resource
+
+# Metadata transformation rules
+metadata_rules:
+  Catalog:
+    actions:
+      - type: rename
+        new_name: catalog
+      - type: modify_value
+        value_mapping:
+          "Liver et Loin": "Joy of Reading"
+          "Poèmes de Loin": "Joy of Reading"
+          "Mom Love": "Love of Life"
+          "Dad Law": "Law of World"
+          "Parlez à Max": "Talk to Max"
+          "Parlez à Lili": "Talk to Lili"
+  Date:
+    actions:
+      - type: retain
+  Last edited time:
+    actions:
+      - type: delete
+  Location:
+    actions:
+      - type: rename
+        new_name: address
+      - type: modify_value
+        regex_mapping:
+          - ["^20-801, GreeCity III, Xiangzhou", "Room 20-801, Gree City, Zhuhai, China"]
+          - ["^Xing Coffee, GreeCity Plaza, Xiangzhou", "Chi-Chu Coffee, Zhuhai, China"]
+          - ["^311, Edgebrook Park, NW", "311, Edgebrook Park NW, Calgary, Canada"]
+          - ["^XY Tech, Building #20", "MicroFountain Tech (Building #20), Zhuhai, China"]
+          - ["^Jenny‘s Cafe Zhuhai", "Jenny Cafe, Zhuhai, China"]
+          - ["^Tianxia City，Kaifeng", "Tian Xia City, Kaifeng, China"]
+          - ["^Australia Velly，Zhuhai", "MicroFountain Tech (Australia Velly)，Zhuhai, China"]
+          - ["^7-2302, Jin Gardon, Xiangzhou", "Room 7-2302, Jin Gardon, Zhuhai, China"]
+          - ["^XY Tech，Building #2", "MicroFountain Tech (Building #2), Zhuhai, China"]
+          - ["^University of Calgary", "University of Calgary (UC), Calgary, Canada"]
+          - ["^Hangzhou East Railway Station", "Hangzhou East Railway Station, Hangzhou, China"]
+          - ["^Fuhuali Zhonghai Build，Zhuhai", "MicroFountain Tech (Fuhuali), Zhuhai, China"]
+          - ["^5th Hospital of SunYiXian", "5th Hospital of SunYiXian University, Zhuhai, China"]
+          - ["^Xi Yue Hotel of Beijing", "Xi Yue Hotel, Beijing, China"]
+          - ["^Montreal", "Montreal, Canada"]
+          - ["^Tom Beans", "Tom Beans Middle School, Calgary, Canada"]
+          - ["^Vancouver International Airport", "Vancouver International Airport, Vancouver, Canada"]
+          - ["^Nanchang Airport", "Nanchang Airport, Nanchang, China"]
+          - ["^Zhuhai Airport", "Zhuhai Airport, Zhuhai, China"]
+          - ["^Banff", "Banff, Canada"]
+          - ["^Canmore", "Canmore, China"]
+          - ["^DaXing Airport", "DaXing International Airport, Beijing, China"]
+          - ["^South Railway Station of Guangzhou", "South Railway Station of Guangzhou, Guangzhou, China"]
+          - ["^Traditional Hospital of Zhuhai", "Traditional Hospital, Zhuhai, China"]
+          - ["^She Kou Harbor", "She Kou Harbor, Shenzhen, China"]
+          - ["^Wuhan University", "Wuhan University, Wuhan, China"]
+          - ["^Gaoqi Intl Airport", "Gaoqi Intl Airport, Xiamen, China"]
+          - ["^People’s Hospital of Zhuhai", "People’s Hospital, Zhuhai, China"]
+          - ["^Baiyun Intl Airport", "Baiyun Intl Airport, Guangzhou, China"]
+          - ["^Capital Airport，Beijing", "Capital Airport，Beijing, Beijing, China"]
+          - ["^Zhuhai Railway Station", "Zhuhai Railway Station, Zhuhai, China"]
+          - ["^Sanzao Airport", "Zhuhai Airport, Zhuhai, China"]
+          - ["^East Railway Station of ZhengZhou", "East Railway Station of ZhengZhou, Zhengzhou, China"]
+          - ["^Starbucks，Fuhuali", "Starbucks, Zhuhai, China"]
+          - ["^QuanJi Hotel，Jingan Temple", "QuanJi Hotel，Jingan Temple, Shanghai, China"]
+          - ["^Tianmu River of Hengqin", "MicroFountain Tech (Tianmu River), Zhuhai, China"]
+          - ["^University of British Columbia", "University of British Columbia (UBC), Vancouver, Canada"]
+          - ["^Sun-Moon Shell Opera，Zhuhai", "Sun-Moon Shell Opera, Zhuhai, China"]
+          - ["^Sea & Mountain Park of Zhuhai", "Sea & Mountain Park, Zhuhai, China"]
+          - ["^Nosehill Library", "Nosehill Library NW, Calgary, Canada"]
+          - ["^HotSpring，Jiangmen", "HotSpring，Jiangmen, China"]
+          - ["^HuGuang Stone，Zhanjiang", "HuGuang Stone，Zhanjiang, China"]
+          - ["^Lianan Rd Citi Center，Gongbei", "Lianan Rd Citi Center, Zhuhai, China"]
+          - ["^Changlong Sea Park，Hengqin，Zhuhai", "Changlong Sea Park, Zhuhai, China"]
+          - ["^Nanning East Railway Station", "Nanning East Railway Station, Nanning, China"]
+          - ["^Lu Mountain，JiuJiang", "Lu Mountain，JiuJiang, China"]
+          - ["^HongQiao Airport", "HongQiao Airport, Shanghai, China"]
+          - ["^West Railway Station of Beijing", "West Railway Station, Beijing, China"]
+          - ["^Heart Gardon of Gengdu", "Heart Gardon of Gengdu, Zhongshan, China"]
+          - ["^Gulangyu Island", "Gulangyu Island, Xiamen, China"]
+          - ["^University of Alberta", "University of Alberta (UA), Edmonton, Canada"]
+          - ["^East Huaqiao City", "East Huaqiao City, Shenzhen, China"]
+          - ["^Lingfeng Intl Gardon", "Lingfeng Intl Gardon, Zhuhai, China"]
+  OnThisDay:
+    actions:
+      - type: delete
+  ❤️:
+    actions:
+      - type: delete
+  Documents:
+    actions:
+      - type: rename
+        new_name: book
+      - type: modify_value
+        regex_mapping:
+          - ["^(.+?) \\(.*\\.md\\)[']*$", "\\1"]  # Extract book title from Markdown file path
