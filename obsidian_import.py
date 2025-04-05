@@ -81,6 +81,7 @@ import time
 from urllib.parse import quote, unquote
 import yaml
 import datetime  # Added for timestamping log entries
+import shutil  # For getting terminal size
 
 class TaskType(Enum):
     """Enum defining different types of tasks that can be performed during the import process."""
@@ -538,10 +539,28 @@ def scan_directory(directory, attachment_output_path, metadata_rules, config):
 
     trace_debug(f"📂 Resource directory created at: {resource_dir}", config)
 
+    # 获取所有 Markdown 文件数量用于进度条
+    if not config.get("debug", False):
+        md_files = []
+        for root, _, files in os.walk(directory):
+            for file in files:
+                if file.endswith(".md"):
+                    md_files.append(os.path.join(root, file))
+        total_files = len(md_files)
+        current_file = 0
+        
+        # 重置进度条计时器
+        if hasattr(display_progress_bar, "start_time"):
+            delattr(display_progress_bar, "start_time")
+
     # Scan for Markdown files
     for root, _, files in os.walk(directory):
         for file in files:
             if file.endswith(".md"):
+                if not config.get("debug", False):
+                    current_file += 1
+                    display_progress_bar(current_file, total_files, f"扫描: {file}")
+                
                 trace_debug(f"📄 Found Markdown file: {file}", config)
                 scan_markdown_file(file, root, directory, resource_dir, metadata_rules, stats, tasks, config)
 
@@ -600,9 +619,31 @@ def execute_tasks(tasks, config):
     """
     trace_debug("🚀 Starting task execution...", config)
     path_mapping = {}
+    total_tasks = len(tasks)
+    
+    # 重置进度条计时器
+    if hasattr(display_progress_bar, "start_time"):
+        delattr(display_progress_bar, "start_time")
+    
     for i, task in enumerate(tasks, start=1):
-        trace_debug(f"⚙️ Executing task {i}/{len(tasks)}: {task['type']}", config)
+        task_type = task['type']
+        task_desc = ""
+        
+        if task_type == TaskType.RENAME_MD.value:
+            task_desc = f"重命名: {Path(task['src']).name}"
+        elif task_type == TaskType.MOVE_ATTACHMENT.value:
+            task_desc = f"移动附件: {Path(task['src']).name}"
+        elif task_type == TaskType.UPDATE_ATTACH_REF.value:
+            task_desc = f"更新引用: {Path(task['file']).name}"
+        elif task_type == TaskType.TRANSFORM_METADATA.value:
+            task_desc = f"转换元数据"
+        
+        if not config.get("debug", False):
+            display_progress_bar(i, total_tasks, task_desc)
+        
+        trace_debug(f"⚙️ Executing task {i}/{total_tasks}: {task['type']}", config)
         execute_task(task, config, path_mapping)
+    
     trace_debug("✅ Task execution completed.", config)
 
 #############################################################
@@ -882,6 +923,11 @@ def print_statistics(stats, unmapped_metadata, tasks):
         unmapped_metadata (dict): 未映射元数据值的字典
         tasks (list): 扫描期间生成的任务列表
     """
+    # 如果有进度条，确保在打印统计信息前完成进度条
+    if hasattr(display_progress_bar, "last_line"):
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
     print("\n📊 扫描统计信息:")
     print("-------------------")
     print(f"处理的 Markdown 文件数量: {stats.get('markdown_files', 0)}")
@@ -995,3 +1041,66 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+def display_progress_bar(current, total, description="", width=None):
+    """
+    显示进度条，格式为: 2/123 [####----] 33% ETA 01:23 当前处理内容
+    
+    参数:
+        current (int): 当前进度
+        total (int): 总任务数
+        description (str): 当前处理的描述
+        width (int, optional): 进度条宽度，默认为终端宽度的一半
+    """
+    if not width:
+        try:
+            terminal_width = shutil.get_terminal_size().columns
+            width = min(50, terminal_width // 2)  # 进度条宽度为终端宽度的一半，但最大为50
+        except:
+            width = 40  # 默认宽度
+    
+    # 计算完成百分比
+    percent = current / total
+    
+    # 计算ETA (预计剩余时间)
+    if not hasattr(display_progress_bar, "start_time"):
+        display_progress_bar.start_time = time.time()
+    
+    elapsed = time.time() - display_progress_bar.start_time
+    if current > 0:
+        eta_seconds = (elapsed / current) * (total - current)
+        eta_min, eta_sec = divmod(int(eta_seconds), 60)
+        eta_str = f"{eta_min:02d}:{eta_sec:02d}"
+    else:
+        eta_str = "--:--"
+    
+    # 构建进度条字符串
+    completed = int(width * percent)
+    progress_bar = "#" * completed + "-" * (width - completed)
+    
+    # 限制描述长度以适应终端
+    try:
+        max_desc_len = max(10, shutil.get_terminal_size().columns - width - 40)  # 为其他部分保留空间
+    except:
+        max_desc_len = 50  # 默认长度
+        
+    if len(description) > max_desc_len:
+        description = description[:max_desc_len-3] + "..."
+    
+    # 构建完整的进度显示
+    progress_str = f"{current}/{total} [{progress_bar}] {percent*100:.0f}% ETA {eta_str} {description}"
+    
+    # 清除当前行并显示进度
+    sys.stdout.write("\r" + " " * len(getattr(display_progress_bar, "last_line", "")))
+    sys.stdout.write("\r" + progress_str)
+    sys.stdout.flush()
+    
+    # 保存最后显示的行，以便下次清除
+    display_progress_bar.last_line = progress_str
+    
+    # 如果完成，添加换行
+    if current == total:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        if hasattr(display_progress_bar, "start_time"):
+            delattr(display_progress_bar, "start_time")
