@@ -28,7 +28,7 @@ else
 fi
 
 # Add default arguments for logging and configuration
-DEFAULT_ARGS="--log=dbg --reset-log --config=config.yaml"
+DEFAULT_ARGS="--log=DBG --reset-log --config=config.yaml"
 
 # Pass all arguments along with the default arguments to the Python script
 $PYTHON_CMD "$PYTHON_SCRIPT" $DEFAULT_ARGS "$@"

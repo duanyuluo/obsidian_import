@@ -1035,9 +1035,9 @@ def parse_arguments():
     )
     parser.add_argument("directory", help="The directory to process", nargs="?")
     parser.add_argument("--config", help="Path to the configuration file", default="obsidian_import.yaml")
-    parser.add_argument("--log", nargs="?", const=LOG_LEVEL_ACTION, choices=LOG_LEVELS.keys(), type=str.lower,
+    parser.add_argument("--log", nargs="?", const=LOG_LEVEL_ACTION, choices=LOG_LEVELS.keys(), type=str.upper,
                         help="Enable logging to a file with an optional log level (default: ACT if no level is provided)")
-    parser.add_argument("--verbose", nargs="?", const=LOG_LEVEL_ACTION, choices=LOG_LEVELS.keys(), type=str.lower,
+    parser.add_argument("--verbose", nargs="?", const=LOG_LEVEL_ACTION, choices=LOG_LEVELS.keys(), type=str.upper,
                         help="Enable verbose output with an optional stdout level (default: ACT if no level is provided)")
     parser.add_argument("--reset-log", action="store_true", help="Clear the log file before starting")
     return parser
