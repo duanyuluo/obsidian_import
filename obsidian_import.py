@@ -135,8 +135,8 @@ def debug(message, level, config):
     level_emojis = {
         LOG_LEVEL_ERROR: "❌ ",
         LOG_LEVEL_ACTION: "⚡ ",
-        LOG_LEVEL_FLOW: "🔄 ",
-        LOG_LEVEL_DEBUG: "🔍 "
+        LOG_LEVEL_FLOW: "👣 ",
+        LOG_LEVEL_DEBUG: "🐞 "
     }
 
     # 构建日志消息
@@ -1052,7 +1052,16 @@ def load_and_configure(args):
     返回:
         dict: 应用覆盖后的配置字典
     """
+    # 检查配置文件是否存在
+    if args.config and not os.path.isfile(args.config):
+        print(f"❌ Error: Configuration file '{args.config}' does not exist.")
+        sys.exit(1)
+
+    # 尝试加载配置文件
     config = load_config(args.config)
+    if not config:
+        print(f"❌ Error: Failed to load configuration file '{args.config}'.")
+        sys.exit(1)
 
     # Apply command-line overrides
     config["log_file"] = "obsidian_import.log" if args.log else None
