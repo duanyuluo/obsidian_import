@@ -27,8 +27,11 @@ else
     exit 1
 fi
 
-# Pass all arguments to the Python script
-$PYTHON_CMD "$PYTHON_SCRIPT" "$@"
+# Add default arguments for logging and configuration
+DEFAULT_ARGS="--log=dbg --reset-log --config=config.yaml"
+
+# Pass all arguments along with the default arguments to the Python script
+$PYTHON_CMD "$PYTHON_SCRIPT" $DEFAULT_ARGS "$@"
 
 # Deactivate the virtual environment after execution
 echo "Deactivating Python virtual environment..."

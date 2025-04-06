@@ -632,6 +632,27 @@ def scan_attachments(original_path, directory, resource_dir, stats, tasks, confi
             move_task = {"type": TaskType.MOVE_ATTACHMENT.value, "src": attachment, "dest": new_attachment_path}
             debug(f"➕ Added move attachment task: {move_task}", LOG_LEVEL_ACTION, config)
             tasks.append(move_task)
+        
+        # 如果转移的附件数量和目录中的文件数量相同，则添加清理任务
+        if len(path_mapping) == attachment_count:
+            cleanup_task = {
+                "type": TaskType.CLEANUP.value,
+                "attachment_dir": attachment_dir
+            }
+            debug(f"➕ Added cleanup task: {cleanup_task}", LOG_LEVEL_ACTION, config)
+            tasks.append(cleanup_task)
+        else:
+            # 如果目录中还有剩余文件，则将目录移动到 trash_output_path
+            trash_output_path = config.get("trash_output_path", "Trash")
+            trash_dir = Path(directory) / trash_output_path
+            trash_dir.mkdir(exist_ok=True)
+            move_to_trash_task = {
+                "type": TaskType.MOVE_ATTACHMENT.value,
+                "src": attachment_dir,
+                "dest": trash_dir
+            }
+            debug(f"➕ Added move to trash task: {move_to_trash_task}", LOG_LEVEL_ACTION, config)
+            tasks.append(move_to_trash_task)
     
     return path_mapping
 
@@ -1014,9 +1035,9 @@ def parse_arguments():
     )
     parser.add_argument("directory", help="The directory to process", nargs="?")
     parser.add_argument("--config", help="Path to the configuration file", default="obsidian_import.yaml")
-    parser.add_argument("--log", nargs="?", const=LOG_LEVEL_ACTION, choices=LOG_LEVELS.keys(),
+    parser.add_argument("--log", nargs="?", const=LOG_LEVEL_ACTION, choices=LOG_LEVELS.keys(), type=str.lower,
                         help="Enable logging to a file with an optional log level (default: ACT if no level is provided)")
-    parser.add_argument("--verbose", nargs="?", const=LOG_LEVEL_ACTION, choices=LOG_LEVELS.keys(),
+    parser.add_argument("--verbose", nargs="?", const=LOG_LEVEL_ACTION, choices=LOG_LEVELS.keys(), type=str.lower,
                         help="Enable verbose output with an optional stdout level (default: ACT if no level is provided)")
     parser.add_argument("--reset-log", action="store_true", help="Clear the log file before starting")
     return parser

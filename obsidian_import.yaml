@@ -2,6 +2,7 @@
 
 # Directory where attachments will be consolidated
 attachment_output_path: Resource
+trash_output_path: Trash
 
 # Metadata transformation rules
 metadata_rules:
