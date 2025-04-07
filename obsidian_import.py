@@ -1074,7 +1074,7 @@ def update_references_in_markdown(file: Union[str, Path], path_mapping: Dict[str
         with file_handle:
             file_handle.writelines(updated_content)
 
-    debug(f"更新文件 {file} 中的引用完成", LOG_LEVEL_ACTION, config)
+    debug(f"更新文件引用完成 {file}", LOG_LEVEL_ACTION, config)
 
 def map_metadata(file: Union[str, Path], config: Dict[str, Any]) -> None:
     """
@@ -1244,7 +1244,8 @@ def print_statistics(config: Dict[str, Any], tasks: List[Dict[str, Any]]) -> Non
                 task_src = task_src.name
             print(f"{prefix} {task['type']}: {task_src}")
     else:
-        print("└─ 🔄 Preprocessing Tasks: None")
+        print("└─ 🔄 Preprocessing Tasks:")
+        print("   └─ None")
 
     # If there are unmapped metadata entries, add a branch in the tree
     if unmapped_metadata:
