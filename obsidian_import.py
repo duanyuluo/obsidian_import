@@ -98,6 +98,7 @@ class TaskType(Enum):
     """Enum defining different types of tasks that can be performed during the import process."""
     RENAME_MD = "RENAME_MD"
     MOVE_ATTACHMENT = "MOVE_ATTACHMENT"
+    COPY_ATTACHMENT = "COPY_ATTACHMENT"
     UPDATE_ATTACH_REF = "UPDATE_ATTACH_REF"
     TRANSFORM_METADATA = "TRANSFORM_METADATA"
     MAP_METADATA = "MAP_METADATA"
@@ -154,6 +155,10 @@ def debug(message, level, config):
             log_file_handle.flush()  # 确保日志立即写入文件
         except Exception as e:
             print(f"❌ Error writing to log file: {e}")
+
+    # 如果是错误级别日志，增加错误计数
+    if level == LOG_LEVEL_ERROR and "stats" in config:
+        config["stats"]["errors"] += 1
 
 def initialize_log_file(config):
     """
@@ -524,8 +529,10 @@ def initialize_scan_stats():
         "attachments": 0,
         "conflicts": 0,
         "metadata_tasks": 0,
-        "unmapped_metadata": 0
-    }, {}, set()
+        "unmapped_metadata": {},  # 用于存储未映射的元数据
+        "used_names": set(),      # 用于存储已使用的文件名
+        "errors": 0               # 用于统计错误日志数量
+    }
 
 
 def scan_markdown_file(file, root, directory, resource_dir, metadata_rules, stats, tasks, config):
@@ -557,12 +564,16 @@ def scan_markdown_file(file, root, directory, resource_dir, metadata_rules, stat
 
     # Step 2: Process attachments
     debug("📦 2.Processing attachments...", LOG_LEVEL_DEBUG, config)  # Changed to DEBUG
-    path_mapping = scan_attachments(original_path, directory, resource_dir, stats, tasks, config)
+    file_path_mapping = scan_attachments(original_path, directory, resource_dir, stats, tasks, config)
 
     # Step 3: Update references in Markdown file
     debug("🔗 3.Updating references in Markdown file...", LOG_LEVEL_DEBUG, config)  # Changed to DEBUG
-    if path_mapping:  # Only add the task if path_mapping is not empty
-        update_task = {"type": TaskType.UPDATE_ATTACH_REF.value, "file": original_path, "path_mapping": path_mapping}
+    if file_path_mapping:  # Only add the task if path_mapping is not empty
+        update_task = {
+            "type": TaskType.UPDATE_ATTACH_REF.value,
+            "file": original_path,
+            "path_mapping": file_path_mapping  # Use file-specific path_mapping
+        }
         debug(f"➕ Added update references task: {update_task}", LOG_LEVEL_ACTION, config)
         tasks.append(update_task)
 
@@ -592,68 +603,99 @@ def scan_attachments(original_path, directory, resource_dir, stats, tasks, confi
     # Extract UID from the Markdown filename
     uid_match = re.search(r" (\w{32})\.md$", str(original_path))
     attachment_dir = None
-    
+
     if uid_match:
         uid = uid_match.group(1)
         debug(f"📌 Found UID in Markdown filename: {uid}", LOG_LEVEL_DEBUG, config)
-        
+
         # Look for an attachment directory with matching UID in its name
         parent_dir = original_path.parent
         potential_dirs = [d for d in parent_dir.iterdir() if d.is_dir()]
-        
+
         for pot_dir in potential_dirs:
             if uid in pot_dir.name:
                 attachment_dir = pot_dir
                 debug(f"📂 Found matching attachment directory: {attachment_dir}", LOG_LEVEL_DEBUG, config)
                 break
-    
-    # If no attachment directory with matching UID is found, assume no attachments
-    if not attachment_dir:
-        debug(f"ℹ️ No attachment directory found for {original_path.name}, skipping attachment processing", LOG_LEVEL_DEBUG, config)
-        return {}  # Return empty mapping as there are no attachments
 
+    # Step 1: Check if the Markdown file contains attachment references
+    with open(original_path, "r") as f:
+        content = f.read()
+    attachment_references = re.findall(r"!\[.*?\]\((.*?)\)", content)  # Match Markdown image links
+
+    # Filter out network attachments (e.g., http:// or https://)
+    local_references = []
+    for ref in attachment_references:
+        if ref.startswith("http://") or ref.startswith("https://"):
+            debug(f"🌐 Ignoring network attachment: {ref}", LOG_LEVEL_DEBUG, config)
+        else:
+            local_references.append(ref)
+
+    if not local_references:
+        debug(f"ℹ️ No local attachment references found in {original_path.name}, skipping attachment processing", LOG_LEVEL_DEBUG, config)
+        return {}  # No local references, no need to process attachments
+
+    # Step 2: Handle references to attachments
     path_mapping = {}
-    if attachment_dir.exists():
-        attachment_count = sum(1 for _ in attachment_dir.iterdir())
-        debug(f"📄 Found {attachment_count} attachments in {attachment_dir}", LOG_LEVEL_DEBUG, config)
-        
-        for i, attachment in enumerate(attachment_dir.iterdir(), start=1):
-            stats["attachments"] += 1
-            if attachment_count == 1:
-                # Single attachment: Use Markdown file name
-                new_attachment_name = f"{original_path.stem}{attachment.suffix}"
+    moved_files_count = 0  # Track the number of moved files
+
+    for ref in local_references:
+        ref_path = Path(directory) / unquote(ref)
+        if ref_path.is_file():
+            if attachment_dir and ref_path.parent == attachment_dir:
+                # 当前 Markdown 文件的附件
+                moved_files_count += 1
+                new_attachment_name = f"{original_path.stem}_{ref_path.name}"
+                new_attachment_path = resource_dir / new_attachment_name
+                old_path = quote(str(ref_path.relative_to(directory)).replace("\\", "/"))
+                new_path = str(new_attachment_path.relative_to(directory)).replace("\\", "/")
+                path_mapping[old_path] = new_path
+
+                move_task = {
+                    "type": TaskType.MOVE_ATTACHMENT.value,
+                    "src": ref_path,
+                    "dest": new_attachment_path,
+                    "is_pre_task": False
+                }
+                debug(f"➕ Added move attachment task: {move_task}", LOG_LEVEL_ACTION, config)
+                tasks.append(move_task)
             else:
-                # Multiple attachments: Append sequence number
-                new_attachment_name = f"{original_path.stem}_{i}{attachment.suffix}"
-            new_attachment_path = resource_dir / new_attachment_name
-            old_path = quote(str(attachment.relative_to(directory)).replace("\\", "/"))
-            new_path = str(new_attachment_path.relative_to(directory)).replace("\\", "/")
-            path_mapping[old_path] = new_path
-            move_task = {"type": TaskType.MOVE_ATTACHMENT.value, "src": attachment, "dest": new_attachment_path}
-            debug(f"➕ Added move attachment task: {move_task}", LOG_LEVEL_ACTION, config)
-            tasks.append(move_task)
-        
-        # 如果转移的附件数量和目录中的文件数量相同，则添加清理任务
-        if len(path_mapping) == attachment_count:
+                # 其他 Markdown 文件的附件
+                base_name = original_path.stem
+                new_attachment_name = base_name + ref_path.suffix
+                counter = 1
+                while (resource_dir / new_attachment_name).exists():
+                    new_attachment_name = f"{base_name}_{counter}{ref_path.suffix}"
+                    counter += 1
+
+                new_attachment_path = resource_dir / new_attachment_name
+                old_path = quote(str(ref_path.relative_to(directory)).replace("\\", "/"))
+                new_path = str(new_attachment_path.relative_to(directory)).replace("\\", "/")
+                
+                # 更新 path_mapping，确保每个文件的引用独立
+                if old_path not in path_mapping or path_mapping[old_path] != new_path:
+                    path_mapping[old_path] = new_path
+
+                copy_task = {
+                    "type": TaskType.COPY_ATTACHMENT.value,
+                    "src": ref_path,
+                    "dest": new_attachment_path,
+                    "is_pre_task": True
+                }
+                debug(f"➕ Added copy attachment task: {copy_task}", LOG_LEVEL_ACTION, config)
+                tasks.append(copy_task)
+
+    # Step 3: Add cleanup task if all files are moved
+    if attachment_dir and attachment_dir.exists():
+        attachment_files = list(attachment_dir.iterdir())
+        if moved_files_count == len(attachment_files):
             cleanup_task = {
                 "type": TaskType.CLEANUP.value,
                 "attachment_dir": attachment_dir
             }
             debug(f"➕ Added cleanup task: {cleanup_task}", LOG_LEVEL_ACTION, config)
             tasks.append(cleanup_task)
-        else:
-            # 如果目录中还有剩余文件，则将目录移动到 trash_output_path
-            trash_output_path = config.get("trash_output_path", "Trash")
-            trash_dir = Path(directory) / trash_output_path
-            trash_dir.mkdir(exist_ok=True)
-            move_to_trash_task = {
-                "type": TaskType.MOVE_ATTACHMENT.value,
-                "src": attachment_dir,
-                "dest": trash_dir
-            }
-            debug(f"➕ Added move to trash task: {move_to_trash_task}", LOG_LEVEL_ACTION, config)
-            tasks.append(move_to_trash_task)
-    
+
     return path_mapping
 
 def generate_rename_markdown_task(original_path, directory, tasks, config):
@@ -692,14 +734,15 @@ def scan_directory(directory, attachment_output_path, metadata_rules, config):
         config (dict): 配置字典
 
     返回:
-        tuple: 包含任务列表、统计信息字典和未映射元数据字典的元组
+        list: 生成的任务列表
     """
     tasks = []
-    stats, unmapped_metadata, used_names = initialize_scan_stats()
+    pre_tasks = []  # 用于收集预处理任务的列表
+    config["stats"] = initialize_scan_stats()  # 初始化统计信息
     resource_dir = Path(directory) / attachment_output_path
     resource_dir.mkdir(exist_ok=True)
 
-    debug(f"📂 Resource directory created at: {resource_dir}", LOG_LEVEL_DEBUG, config)  # Changed to DEBUG
+    debug(f"📂 Resource directory created at: {resource_dir}", LOG_LEVEL_DEBUG, config)
 
     # 获取所有 Markdown 文件数量用于进度条
     if not config.get("debug", False):
@@ -710,23 +753,23 @@ def scan_directory(directory, attachment_output_path, metadata_rules, config):
                     md_files.append(os.path.join(root, file))
         total_files = len(md_files)
         current_file = 0
-        
+
         # 重置进度条计时器
         if hasattr(display_progress_bar, "start_time"):
             delattr(display_progress_bar, "start_time")
 
-    # Scan for Markdown files
+    # 扫描 Markdown 文件
     for root, _, files in os.walk(directory):
         for file in files:
             if file.endswith(".md"):
                 if not config.get("debug", False):
                     current_file += 1
                     display_progress_bar(current_file, total_files, f"扫描: {file}")
-                
-                debug(f"📄 Found Markdown file: {file}", LOG_LEVEL_DEBUG, config)  # Changed to DEBUG
-                scan_markdown_file(file, root, directory, resource_dir, metadata_rules, stats, tasks, config)
 
-    return tasks, stats, unmapped_metadata
+                debug(f"📄 Found Markdown file: {file}", LOG_LEVEL_DEBUG, config)
+                scan_markdown_file(file, root, directory, resource_dir, metadata_rules, config["stats"], tasks, config)
+
+    return tasks
 
 #############################################################
 # TASK EXECUTION
@@ -752,6 +795,10 @@ def execute_task(task, config, path_mapping):
         elif task["type"] == TaskType.MOVE_ATTACHMENT.value:
             debug(f"📦 移动附件: {task['src']} -> {task['dest']}", LOG_LEVEL_ACTION, config)
             Path(task["src"]).rename(task["dest"])
+        elif task["type"] == TaskType.COPY_ATTACHMENT.value:
+            debug(f"📋 复制附件: {task['src']} -> {task['dest']}", LOG_LEVEL_ACTION, config)
+            shutil.copy(task["src"], task["dest"])  # 执行复制操作
+            path_mapping[str(task["src"])] = str(task["dest"])  # 更新路径映射表
         elif task["type"] == TaskType.UPDATE_ATTACH_REF.value:
             debug(f"🔗 更新文件中的引用: {task['file']}", LOG_LEVEL_ACTION, config)
             update_references_in_markdown(task["file"], task["path_mapping"], config.get("metadata_rules", {}), config)
@@ -785,10 +832,20 @@ def execute_tasks(tasks, config):
     if hasattr(display_progress_bar, "start_time"):
         delattr(display_progress_bar, "start_time")
     
-    for i, task in enumerate(tasks, start=1):
+    # 优先执行预处理任务
+    pre_tasks = [task for task in tasks if task.get("is_pre_task", False)]
+    main_tasks = [task for task in tasks if not task.get("is_pre_task", False)]
+
+    debug(f"⚙️ Executing {len(pre_tasks)} pre-tasks...", LOG_LEVEL_FLOW, config)
+    for i, task in enumerate(pre_tasks, start=1):
+        debug(f"⚙️ Executing pre-task {i}/{len(pre_tasks)}: {task['type']}", LOG_LEVEL_DEBUG, config)
+        execute_task(task, config, path_mapping)
+
+    debug(f"⚙️ Executing {len(main_tasks)} main tasks...", LOG_LEVEL_FLOW, config)
+    for i, task in enumerate(main_tasks, start=1):
         task_type = task['type']
         task_desc = ""
-        
+
         if task_type == TaskType.RENAME_MD.value:
             task_desc = f"重命名: {Path(task['src']).name}"
         elif task_type == TaskType.MOVE_ATTACHMENT.value:
@@ -799,10 +856,10 @@ def execute_tasks(tasks, config):
             task_desc = f"转换元数据"
         
         if not config.get("debug", False):
-            display_progress_bar(i, total_tasks, task_desc)
+            display_progress_bar(i, len(main_tasks), task_desc)
         
-        debug(f"⚙️ Executing task {i}/{total_tasks}: {task['type']}", LOG_LEVEL_DEBUG, config)
-        execute_task(task, config, path_mapping)    
+        debug(f"⚙️ Executing task {i}/{len(main_tasks)}: {task['type']}", LOG_LEVEL_DEBUG, config)
+        execute_task(task, config, path_mapping)
 
 #############################################################
 # METADATA TRANSFORMATION
@@ -912,7 +969,7 @@ def update_references_in_markdown(file, path_mapping, metadata_rules, config):
 
     参数:
         file (str或Path): Markdown 文件的路径。
-        path_mapping (dict): 旧路径到新路径的映射。
+        path_mapping (dict): 当前文件的旧路径到新路径的映射。
         metadata_rules (dict): 处理元数据的规则。
         config (dict, optional): 用于日志记录的配置。
     """
@@ -923,17 +980,6 @@ def update_references_in_markdown(file, path_mapping, metadata_rules, config):
         debug(f"Updating references and metadata in: {file}", LOG_LEVEL_DEBUG, config)
         debug(f"Path mapping: {path_mapping}", LOG_LEVEL_DEBUG, config)
 
-        # Process metadata transformation
-        metadata_end_index = 0
-        for i, line in enumerate(content):
-            if line.strip() == "":  # Assume metadata ends at the first blank line
-                metadata_end_index = i
-                break
-
-        metadata_lines = content[:metadata_end_index]
-        transformed_metadata = transform_metadata(metadata_lines, metadata_rules, config)
-        content = transformed_metadata + content[metadata_end_index:]
-
         # Update references
         updated_content = []
         for i, line in enumerate(content, start=1):
@@ -943,7 +989,6 @@ def update_references_in_markdown(file, path_mapping, metadata_rules, config):
                     encoded_new_path = quote(new_path)
                     line = line.replace(old_path, encoded_new_path)
                     debug(f"Line {i}:\n   Original: {original_line.strip()}\n   Updated:  {line.strip()}", LOG_LEVEL_DEBUG, config)
-                    debug(f"Updated reference in {file} line {i}: {old_path} -> {encoded_new_path}", LOG_LEVEL_ACTION, config)
             updated_content.append(line)
 
         with open(file, "w") as f:
@@ -1085,18 +1130,18 @@ def print_statistics(stats, unmapped_metadata, tasks):
         sys.stdout.write("\n")
         sys.stdout.flush()
 
+    # 统计预处理任务数量
+    pre_task_count = sum(1 for task in tasks if task.get("is_pre_task", False))
+
     print("\n📊 扫描统计信息:")
     print("-------------------")
     print(f"处理的 Markdown 文件数量: {stats.get('markdown_files', 0)}")
     print(f"处理的附件数量: {stats.get('attachments', 0)}")
     print(f"元数据转换任务数量: {stats.get('metadata_tasks', 0)}")
-    print(f"未映射的元数据条目: {stats.get('unmapped_metadata', 0)}")
+    print(f"预处理任务数量: {pre_task_count}")  # 显示预处理任务数量
+    print(f"未映射的元数据条目数量: {len(stats.get('unmapped_metadata', {}))}")  # 显示未映射元数据的数量
+    print(f"扫描阶段错误数量: {stats.get('errors', 0)}")
     print(f"生成的总任务数量: {len(tasks)}")
-
-    if unmapped_metadata:
-        print("\n⚠️ 未映射的元数据:")
-        for key, values in unmapped_metadata.items():
-            print(f"  - {key}: {', '.join(values)}")
 
     print("\n📋 任务摘要:")
     task_counts = {}
@@ -1105,9 +1150,17 @@ def print_statistics(stats, unmapped_metadata, tasks):
         if task_type not in task_counts:
             task_counts[task_type] = 0
         task_counts[task_type] += 1
-    
+
     for task_type, count in task_counts.items():
         print(f"  • {task_type}: {count} 个任务")
+
+    # 如果有未映射的元数据条目，单独列出
+    if stats.get("unmapped_metadata"):
+        print("\n⚠️ 未映射的元数据条目:")
+        for key, values in stats["unmapped_metadata"].items():
+            print(f"  - {key}: {len(values)} 个值")
+            for value in values:
+                print(f"    • {value}")
 
 def confirm_execution():
     """
@@ -1139,14 +1192,6 @@ def print_final_statistics(tasks, execution_time, config):
 def main():
     """
     主函数，用于协调 Obsidian 导入过程。
-
-    步骤:
-    1. 解析命令行参数
-    2. 加载配置并应用覆盖
-    3. 扫描目录并生成任务
-    4. 打印统计信息并提示确认
-    5. 如果确认，执行任务
-    6. 打印最终统计信息和执行时间
     """
     parser = parse_arguments()
     if len(sys.argv) == 1:
@@ -1176,27 +1221,22 @@ def main():
 
         # Step 1: Scan the directory
         debug("🚀 Starting directory scan...", LOG_LEVEL_FLOW, config)
-        tasks, stats, unmapped_metadata = scan_directory(directory, attachment_output_path, metadata_rules, config)
-        debug("✅ Directory scan completed.", LOG_LEVEL_FLOW, config)  # Changed to DEBUG
+        tasks = scan_directory(directory, attachment_output_path, metadata_rules, config)
 
-        # Step 2: Display statistics
-        print_statistics(stats, unmapped_metadata, tasks)
-
-        # Step 3: Prompt for confirmation
+        # Step 2: Confirm execution
+        print_statistics(config["stats"], config["stats"]["unmapped_metadata"], tasks)
         if not confirm_execution():
-            debug("Operation canceled by the user.", LOG_LEVEL_ACTION, config)
+            print("❌ Execution cancelled by user.")
             return
-
-        # Step 4: Execute tasks
-        debug("🚀 Starting task execution...", LOG_LEVEL_FLOW, config)
-        start_time = time.time()
+        
+        # Step 3: Execute tasks
+        debug("🚀 Executing tasks...", LOG_LEVEL_FLOW, config)
         execute_tasks(tasks, config)
-        end_time = time.time()
-        debug("✅ Task execution completed.", LOG_LEVEL_FLOW, config)
 
-        # Step 5: Print final statistics
-        print_final_statistics(tasks, end_time - start_time, config)
-        debug("✅ Obsidian Import Tool completed.", LOG_LEVEL_FLOW, config)
+        # Step 4: Print final statistics
+        stats = config["stats"]
+        unmapped_metadata = stats["unmapped_metadata"]
+        print_statistics(stats, unmapped_metadata, tasks)
     finally:
         close_log_file(config)
 
