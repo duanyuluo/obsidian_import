@@ -524,6 +524,8 @@ def generate_metadata_tasks(md_file: Union[str, Path], config: Dict[str, Any]) -
     metadata_lines = read_metadata_lines(md_file, config)
     for line in metadata_lines:
         tasks.extend(process_metadata_line(line, config))
+    for task in tasks:
+        task["status"] = "todo"  # Initialize task status as "todo"
     return tasks
 
 #############################################################
@@ -673,7 +675,8 @@ def scan_attachments(original_path: Path, directory: str, resource_dir: Path, ta
                     "type": TaskType.MOVE_ATTACHMENT.value,
                     "src": ref_path,
                     "dest": new_attachment_path,
-                    "is_pre_task": False
+                    "is_pre_task": False,
+                    "status": "todo"  # Initialize task status as "todo"
                 }
                 debug(f"➕ Added move attachment task: {move_task}", LOG_LEVEL_ACTION, config)
                 tasks.append(move_task)
@@ -698,7 +701,8 @@ def scan_attachments(original_path: Path, directory: str, resource_dir: Path, ta
                     "type": TaskType.COPY_ATTACHMENT.value,
                     "src": ref_path,
                     "dest": new_attachment_path,
-                    "is_pre_task": True
+                    "is_pre_task": True,
+                    "status": "todo"  # Initialize task status as "todo"
                 }
                 debug(f"➕ Added copy attachment task: {copy_task}", LOG_LEVEL_ACTION, config)
                 tasks.append(copy_task)
@@ -735,7 +739,12 @@ def generate_rename_markdown_task(original_path: Path, directory: str, tasks: Li
         new_name = f"{base_name}_{counter}"
         counter += 1
     new_md_path = Path(directory) / f"{new_name}.md"
-    rename_task = {"type": TaskType.RENAME_MD.value, "src": original_path, "dest": new_md_path}
+    rename_task = {
+        "type": TaskType.RENAME_MD.value,
+        "src": original_path,
+        "dest": new_md_path,
+        "status": "todo"  # Initialize task status as "todo"
+    }
     tasks.append(rename_task)
     return rename_task
 
@@ -802,38 +811,45 @@ def execute_task(task: Dict[str, Any], config: Dict[str, Any]) -> None:
         task (dict): 要执行的任务
         config (dict): 配置字典
     """
-    if task["type"] == TaskType.RENAME_MD.value:
-        debug(f"✏️ 重命名文件: {task['src']} -> {task['dest']}", LOG_LEVEL_ACTION, config)
-        Path(task["src"]).rename(task["dest"])
-    elif task["type"] == TaskType.MOVE_ATTACHMENT.value:
-        debug(f"📦 移动附件: {task['src']} -> {task['dest']}", LOG_LEVEL_ACTION, config)
-        Path(task["src"]).rename(task["dest"])
-    elif task["type"] == TaskType.COPY_ATTACHMENT.value:
-        debug(f"📋 复制附件: {task['src']} -> {task['dest']}", LOG_LEVEL_ACTION, config)
-        shutil.copy(task["src"], task["dest"])  # 执行复制操作
-    elif task["type"] == TaskType.UPDATE_ATTACH_REF.value:
-        debug(f"🔗 更新文件中的引用: {task['file']}", LOG_LEVEL_ACTION, config)
-        path_mapping = task.get("path_mapping", {})  # 从任务中获取 path_mapping
-        update_references_in_markdown(task["file"], path_mapping, config)
-    elif task["type"] == TaskType.TRANSFORM_METADATA.value:
-        debug(f"🛠️ 转换文件中的元数据: {task['file']}", LOG_LEVEL_ACTION, config)
-        map_metadata(task["file"], config)
-    elif task["type"] == TaskType.CLEANUP.value:
-        debug(f"🗑️ 清理目标: {task['dest']}", LOG_LEVEL_ACTION, config)
-        dest_path = Path(task["dest"])  # 确保 dest 是 Path 对象
-        if dest_path.exists():
-            if dest_path.is_file():
-                dest_path.unlink()  # 删除文件
-                debug(f"✅ 文件已删除: {dest_path}", LOG_LEVEL_ACTION, config)
-            elif dest_path.is_dir():
-                try:
-                    dest_path.rmdir()  # 尝试删除空目录
-                    debug(f"✅ 空目录已删除: {dest_path}", LOG_LEVEL_ACTION, config)
-                except OSError:
-                    shutil.rmtree(dest_path)  # 删除非空目录
-                    debug(f"✅ 非空目录已删除: {dest_path}", LOG_LEVEL_ACTION, config)
-        else:
-            debug(f"⚠️ 清理目标不存在: {dest_path}", LOG_LEVEL_ERROR, config)
+    if task.get("status") in ["done", "fail"]:
+        return
+    try:
+        if task["type"] == TaskType.RENAME_MD.value:
+            debug(f"✏️ 重命名文件: {task['src']} -> {task['dest']}", LOG_LEVEL_ACTION, config)
+            Path(task["src"]).rename(task["dest"])
+        elif task["type"] == TaskType.MOVE_ATTACHMENT.value:
+            debug(f"📦 移动附件: {task['src']} -> {task['dest']}", LOG_LEVEL_ACTION, config)
+            Path(task["src"]).rename(task["dest"])
+        elif task["type"] == TaskType.COPY_ATTACHMENT.value:
+            debug(f"📋 复制附件: {task['src']} -> {task['dest']}", LOG_LEVEL_ACTION, config)
+            shutil.copy(task["src"], task["dest"])  # 执行复制操作
+        elif task["type"] == TaskType.UPDATE_ATTACH_REF.value:
+            debug(f"🔗 更新文件中的引用: {task['file']}", LOG_LEVEL_ACTION, config)
+            path_mapping = task.get("path_mapping", {})  # 从任务中获取 path_mapping
+            update_references_in_markdown(task["file"], path_mapping, config)
+        elif task["type"] == TaskType.TRANSFORM_METADATA.value:
+            debug(f"🛠️ 转换文件中的元数据: {task['file']}", LOG_LEVEL_ACTION, config)
+            map_metadata(task["file"], config)
+        elif task["type"] == TaskType.CLEANUP.value:
+            debug(f"🗑️ 清理目标: {task['dest']}", LOG_LEVEL_ACTION, config)
+            dest_path = Path(task["dest"])  # 确保 dest 是 Path 对象
+            if dest_path.exists():
+                if dest_path.is_file():
+                    dest_path.unlink()  # 删除文件
+                    debug(f"✅ 文件已删除: {dest_path}", LOG_LEVEL_ACTION, config)
+                elif dest_path.is_dir():
+                    try:
+                        dest_path.rmdir()  # 尝试删除空目录
+                        debug(f"✅ 空目录已删除: {dest_path}", LOG_LEVEL_ACTION, config)
+                    except OSError:
+                        shutil.rmtree(dest_path)  # 删除非空目录
+                        debug(f"✅ 非空目录已删除: {dest_path}", LOG_LEVEL_ACTION, config)
+            else:
+                debug(f"⚠️ 清理目标不存在: {dest_path}", LOG_LEVEL_ERROR, config)
+        task["status"] = "done"  # Mark task as done
+    except Exception as e:
+        debug(f"❌ Task failed: {task}. Error: {e}", LOG_LEVEL_ERROR, config)
+        task["status"] = "fail"  # Mark task as failed
 
 def execute_tasks(tasks: List[Dict[str, Any]], config: Dict[str, Any]) -> None:
     """
@@ -1160,10 +1176,6 @@ def print_statistics(config: Dict[str, Any], tasks: List[Dict[str, Any]]) -> Non
     print(f"扫描阶段错误数量: {stats.get('errors', 0)}")
     print(f"生成的总任务数量: {len(tasks)}")
 
-    print("\n📋 预处理任务:")
-    for task in pre_tasks:
-        print(f"  • {task['type']}: {task.get('src', task.get('file', 'N/A'))}")
-
     print("\n📋 任务摘要:")
     task_counts = {}
     for task in tasks:
@@ -1174,6 +1186,12 @@ def print_statistics(config: Dict[str, Any], tasks: List[Dict[str, Any]]) -> Non
 
     for task_type, count in task_counts.items():
         print(f"  • {task_type}: {count} 个任务")
+
+    # 只有当存在预处理任务时才打印
+    if pre_tasks:
+        print("\n📋 预处理任务:")
+        for task in pre_tasks:
+            print(f"  • {task['type']}: {task.get('src', task.get('file', 'N/A'))}")
 
     # 如果有未映射的元数据条目，单独列出
     if unmapped_metadata:
