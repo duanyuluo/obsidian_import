@@ -83,6 +83,7 @@ import datetime
 import logging
 import typing
 from typing import List, Dict, Tuple, Optional, Union, Any
+import uuid  # Add this import for generating unique IDs
 
 # Removed duplicate `shutil` import and unused `defaultdict` import
 # Fixed import order to comply with PEP8
@@ -461,7 +462,8 @@ def process_metadata_line(line: str, config: Dict[str, Any]) -> List[Dict[str, A
             "type": TaskType.TRANSFORM_METADATA.value,
             "key": key,
             "action": {"type": "delete"},
-            "file": config.get("current_file")  # 添加文件路径
+            "file": config.get("current_file"),  # 添加文件路径
+            "id": generate_task_id()  # Add unique task ID
         }
         debug(f"➕ Added metadata task: {task}", LOG_LEVEL_ACTION, config)
         return [task]
@@ -533,7 +535,8 @@ def apply_metadata_actions(key: str, value: str, actions: List[Dict[str, Any]], 
             "old": f"{key}: {value}",
             "new": f"{current_key}: {current_value}",
             "action": {"type": "replace"},
-            "file": config.get("current_file")  # Ensure 'file' key is included
+            "file": config.get("current_file"),  # Ensure 'file' key is included
+            "id": generate_task_id()  # Add unique task ID
         })
     return tasks
 
@@ -617,7 +620,8 @@ def scan_markdown_file(file: str, root: str, directory: str, resource_dir: Path,
         update_task = {
             "type": TaskType.UPDATE_ATTACH_REF.value,
             "file": original_path,
-            "path_mapping": file_path_mapping  # Use file-specific path_mapping
+            "path_mapping": file_path_mapping,  # Use file-specific path_mapping
+            "id": generate_task_id()  # Add unique task ID
         }
         debug(f"➕ Added update references task: {update_task}", LOG_LEVEL_ACTION, config)
         tasks.append(update_task)
@@ -720,7 +724,8 @@ def scan_attachments(original_path: Path, directory: str, resource_dir: Path, ta
                     "src": ref_path,
                     "dest": new_attachment_path,
                     "is_pre_task": False,
-                    "status": "todo"  # Initialize task status as "todo"
+                    "status": "todo",  # Initialize task status as "todo"
+                    "id": generate_task_id()  # Add unique task ID
                 }
                 debug(f"➕ Added move attachment task: {move_task}", LOG_LEVEL_ACTION, config)
                 tasks.append(move_task)
@@ -746,7 +751,8 @@ def scan_attachments(original_path: Path, directory: str, resource_dir: Path, ta
                     "src": ref_path,
                     "dest": new_attachment_path,
                     "is_pre_task": True,
-                    "status": "todo"  # Initialize task status as "todo"
+                    "status": "todo",  # Initialize task status as "todo"
+                    "id": generate_task_id()  # Add unique task ID
                 }
                 debug(f"➕ Added copy attachment task: {copy_task}", LOG_LEVEL_ACTION, config)
                 tasks.append(copy_task)
@@ -757,7 +763,8 @@ def scan_attachments(original_path: Path, directory: str, resource_dir: Path, ta
         if moved_files_count == len(attachment_files):
             cleanup_task = {
                 "type": TaskType.CLEANUP.value,
-                "dest": attachment_dir
+                "dest": attachment_dir,
+                "id": generate_task_id()  # Add unique task ID
             }
             debug(f"➕ Added cleanup task: {cleanup_task}", LOG_LEVEL_ACTION, config)
             tasks.append(cleanup_task)
@@ -787,7 +794,8 @@ def generate_rename_markdown_task(original_path: Path, directory: str, tasks: Li
         "type": TaskType.RENAME_MD.value,
         "src": original_path,
         "dest": new_md_path,
-        "status": "todo"  # Initialize task status as "todo"
+        "status": "todo",  # Initialize task status as "todo"
+        "id": generate_task_id()  # Add unique task ID
     }
     tasks.append(rename_task)
     return rename_task
@@ -847,6 +855,12 @@ def scan_directory(directory: str, attachment_output_path: str, config: Dict[str
 # Functions in this section handle task execution.
 # These include `execute_task` and `execute_tasks`.
 
+def generate_task_id() -> str:
+    """
+    Generate a unique task ID in the format 'taskxxxxx'.
+    """
+    return f"task{uuid.uuid4().hex[:5]}"
+
 def execute_task(task: Dict[str, Any], config: Dict[str, Any]) -> None:
     """
     根据任务类型执行单个任务。
@@ -858,24 +872,27 @@ def execute_task(task: Dict[str, Any], config: Dict[str, Any]) -> None:
     if task.get("status") in ["done", "fail"]:
         return
     try:
+        if "id" not in task:
+            debug(f"⚠️ Task ID not found, generating a new one.", LOG_LEVEL_ERROR, config)
+            task["id"] = generate_task_id()  # Ensure task has a unique ID
         if task["type"] == TaskType.RENAME_MD.value:
-            debug(f"✏️ 重命名文件: {task['src']} -> {task['dest']}", LOG_LEVEL_ACTION, config)
+            debug(f"✏️ 重命名文件: {task}", LOG_LEVEL_ACTION, config)
             Path(task["src"]).rename(task["dest"])
         elif task["type"] == TaskType.MOVE_ATTACHMENT.value:
-            debug(f"📦 移动附件: {task['src']} -> {task['dest']}", LOG_LEVEL_ACTION, config)
+            debug(f"📦 移动附件: {task}", LOG_LEVEL_ACTION, config)
             Path(task["src"]).rename(task["dest"])
         elif task["type"] == TaskType.COPY_ATTACHMENT.value:
-            debug(f"📋 复制附件: {task['src']} -> {task['dest']}", LOG_LEVEL_ACTION, config)
+            debug(f"📋 复制附件: {task}", LOG_LEVEL_ACTION, config)
             shutil.copy(task["src"], task["dest"])  # 执行复制操作
         elif task["type"] == TaskType.UPDATE_ATTACH_REF.value:
-            debug(f"🔗 更新文件中的引用: {task['file']}", LOG_LEVEL_ACTION, config)
+            debug(f"🔗 更新文件中的引用: {task}", LOG_LEVEL_ACTION, config)
             path_mapping = task.get("path_mapping", {})  # 从任务中获取 path_mapping
             update_references_in_markdown(task["file"], path_mapping, config)
         elif task["type"] == TaskType.TRANSFORM_METADATA.value:
-            debug(f"🛠️ 转换文件中的元数据: {task['file']}", LOG_LEVEL_ACTION, config)
+            debug(f"🛠️ 转换文件中的元数据: {task}", LOG_LEVEL_ACTION, config)
             map_metadata(task["file"], config)
         elif task["type"] == TaskType.CLEANUP.value:
-            debug(f"🗑️ 清理目标: {task['dest']}", LOG_LEVEL_ACTION, config)
+            debug(f"🗑️ 清理目标: {task}", LOG_LEVEL_ACTION, config)
             dest_path = Path(task["dest"])  # 确保 dest 是 Path 对象
             if dest_path.exists():
                 if dest_path.is_file():
@@ -914,11 +931,15 @@ def execute_tasks(tasks: List[Dict[str, Any]], config: Dict[str, Any]) -> None:
 
     debug(f"⚙️ Executing {len(pre_tasks)} pre-tasks...", LOG_LEVEL_FLOW, config)
     for i, task in enumerate(pre_tasks, start=1):
+        if "id" not in task:
+            task["id"] = generate_task_id()  # Ensure task has a unique ID
         debug(f"⚙️ Executing pre-task {i}/{len(pre_tasks)}: {task['type']}", LOG_LEVEL_DEBUG, config)
         execute_task(task, config)
 
     debug(f"⚙️ Executing {len(main_tasks)} main tasks...", LOG_LEVEL_FLOW, config)
     for i, task in enumerate(main_tasks, start=1):
+        if "id" not in task:
+            task["id"] = generate_task_id()  # Ensure task has a unique ID
         task_type = task['type']
         task_desc = ""
 
@@ -1213,13 +1234,13 @@ def print_statistics(config: Dict[str, Any], tasks: List[Dict[str, Any]]) -> Non
 
     print("\n📊 Import Statistics")
     print("├─ 📝 Summary")
-    print(f"│  ├─ Processed Markdown files:    {stats.get('markdown_files', 0)}")
-    print(f"│  ├─ Processed attachments:       {stats.get('attachments', 0)}")
-    print(f"│  ├─ Metadata conversion tasks:   {stats.get('metadata_tasks', 0)}")
-    print(f"│  ├─ Preprocessing tasks:         {len(pre_tasks)}")
-    print(f"│  ├─ Unmapped metadata entries:   {len(unmapped_metadata)}")
-    print(f"│  ├─ Scanning phase errors:       {stats.get('errors', 0)}")
-    print(f"│  └─ Total tasks generated:       {len(tasks)}")
+    print(f"│  ├─ Processed Markdown files    : {stats.get('markdown_files', 0)}")
+    print(f"│  ├─ Processed attachments       : {stats.get('attachments', 0)}")
+    print(f"│  ├─ Metadata conversion tasks   : {stats.get('metadata_tasks', 0)}")
+    print(f"│  ├─ Preprocessing tasks         : {len(pre_tasks)}")
+    print(f"│  ├─ Unmapped metadata entries   : {len(unmapped_metadata)}")
+    print(f"│  ├─ Scanning phase errors       : {stats.get('errors', 0)}")
+    print(f"│  └─ Total tasks generated       : {len(tasks)}")
 
     print("├─ 🔍 Details")
     task_counts = {}
@@ -1232,7 +1253,7 @@ def print_statistics(config: Dict[str, Any], tasks: List[Dict[str, Any]]) -> Non
     task_types = list(task_counts.keys())
     for i, task_type in enumerate(task_types):
         prefix = "│  └─" if i == len(task_types) - 1 else "│  ├─"
-        print(f"{prefix} {task_type:20}: {task_counts[task_type]} tasks")
+        print(f"{prefix} {task_type:28}: {task_counts[task_type]} tasks")
 
     # Only print preprocessing tasks when they exist
     if pre_tasks:
@@ -1242,7 +1263,7 @@ def print_statistics(config: Dict[str, Any], tasks: List[Dict[str, Any]]) -> Non
             task_src = task.get('src', task.get('file', 'N/A'))
             if isinstance(task_src, Path):
                 task_src = task_src.name
-            print(f"{prefix} {task['type']}: {task_src}")
+            print(f"{prefix} {task['type']:28}: {task_src}")
     else:
         print("└─ 🔄 Preprocessing Tasks:")
         print("   └─ None")
@@ -1251,13 +1272,12 @@ def print_statistics(config: Dict[str, Any], tasks: List[Dict[str, Any]]) -> Non
     if unmapped_metadata:
         print("\n⚠️  Unmapped Metadata")
         metadata_keys = list(unmapped_metadata.keys())
-        max_key_length = max([len(key) for key in metadata_keys], default=0)
         
         for i, key in enumerate(metadata_keys):
             values = unmapped_metadata[key]
             is_last_key = i == len(metadata_keys) - 1
             key_prefix = "└─" if is_last_key else "├─"
-            print(f"{key_prefix} {key:{max_key_length}} : {len(values)} values")
+            print(f"{key_prefix} {key:28}: {len(values)} values")
             
             for j, value in enumerate(values):
                 value_prefix = "   └─" if j == len(values) - 1 else "   ├─"
@@ -1270,7 +1290,7 @@ def confirm_execution() -> bool:
     返回:
         bool: 如果用户确认则为 True，否则为 False
     """
-    response = input("Do you want to proceed with the tasks? (yes/no): ").strip().lower()
+    response = input("\nDo you want to proceed with the tasks? (yes/no): ").strip().lower()
     return response in ["yes", "y"]
 
 def print_final_statistics(tasks: List[Dict[str, Any]], execution_time: float, config: Dict[str, Any]) -> None:
