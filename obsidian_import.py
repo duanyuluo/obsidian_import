@@ -604,7 +604,7 @@ def scan_markdown_file(file: str, root: str, directory: str, resource_dir: Path,
 
 def scan_attachments(original_path: Path, directory: str, resource_dir: Path, tasks: List[Dict[str, Any]], config: Dict[str, Any]) -> Dict[str, str]:
     """
-    处理给定 Markdown 文件的附件。
+    处理给定 Markdown 文件的附件，包括图片、视频和 PDF。
 
     参数:
         original_path (Path): Markdown 文件的路径
@@ -641,7 +641,9 @@ def scan_attachments(original_path: Path, directory: str, resource_dir: Path, ta
     if not content:
         debug(f"❌ Error: Empty Markdown file {original_path}, skipping attachment processing", LOG_LEVEL_ERROR, config)
         return {}
-    attachment_references = re.findall(r"!\[.*?\]\((.*?)\)", content)  # Match Markdown image links
+    
+    # Match Markdown links for images, videos, and PDFs
+    attachment_references = re.findall(r"!\[.*?\]\((.*?)\)", content)  # Match Markdown image/video/PDF links
 
     # Filter out network attachments (e.g., http:// or https://)
     local_references = []
@@ -659,9 +661,12 @@ def scan_attachments(original_path: Path, directory: str, resource_dir: Path, ta
     path_mapping = {}
     moved_files_count = 0  # Track the number of moved files
 
+    # Supported attachment extensions
+    supported_extensions = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".mp4", ".mov", ".avi", ".mkv", ".pdf"}
+
     for ref in local_references:
         ref_path = Path(directory) / unquote(ref)
-        if ref_path.is_file():
+        if ref_path.is_file() and ref_path.suffix.lower() in supported_extensions:
             if attachment_dir and ref_path.parent == attachment_dir:
                 # 当前 Markdown 文件的附件
                 moved_files_count += 1
