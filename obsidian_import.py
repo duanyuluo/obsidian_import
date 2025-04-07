@@ -81,6 +81,8 @@ from urllib.parse import quote, unquote
 import yaml
 import datetime
 import logging
+import typing
+from typing import List, Dict, Tuple, Optional, Union, Any
 
 # Removed duplicate `shutil` import and unused `defaultdict` import
 # Fixed import order to comply with PEP8
@@ -117,7 +119,7 @@ LOG_LEVELS = {
 logging.addLevelName(25, "ACTION")
 logging.addLevelName(15, "FLOW")
 
-def debug(message, level, config):
+def debug(message: str, level: str, config: Dict[str, Any]) -> None:
     """
     统一的调试和日志记录函数。
 
@@ -161,7 +163,7 @@ def debug(message, level, config):
     if level == LOG_LEVEL_ERROR and "stats" in config:
         config["stats"]["errors"] += 1
 
-def safe_open_file(file_path, mode, encoding="utf-8"):
+def safe_open_file(file_path: str, mode: str, encoding: str = "utf-8") -> Optional[typing.IO]:
     """
     安全地打开文件，处理可能的异常。
 
@@ -179,7 +181,7 @@ def safe_open_file(file_path, mode, encoding="utf-8"):
         print(f"❌ Error opening file {file_path}: {e}")
         return None
 
-def safe_close_file(file_handle):
+def safe_close_file(file_handle: Optional[typing.IO]) -> None:
     """
     安全地关闭文件句柄，处理可能的异常。
 
@@ -193,7 +195,7 @@ def safe_close_file(file_handle):
     except Exception as e:
         print(f"❌ Error closing file: {e}")
 
-def initialize_log_file(config):
+def initialize_log_file(config: Dict[str, Any]) -> None:
     """
     初始化日志文件。如果启用了 --reset 参数，则清空日志文件。
     如果启用了 --log 参数但未指定文件名，则使用默认文件名。
@@ -212,7 +214,7 @@ def initialize_log_file(config):
             print(f"✅ Log file {config['log_file']} {'reset' if mode == 'w' else 'opened for appending'} successfully.")
             debug("Log file reset by user request", LOG_LEVEL_ACTION, config)
 
-def close_log_file(config):
+def close_log_file(config: Dict[str, Any]) -> None:
     """
     关闭日志文件句柄。
 
@@ -225,7 +227,7 @@ def close_log_file(config):
 #############################################################
 # PROGRESS BAR FUNCTION
 #############################################################
-def display_progress_bar(current, total, description=""):
+def display_progress_bar(current: int, total: int, description: str = "") -> None:
     """
     显示进度条，格式为: XXXX: XXXX [####----] 33% ETA 01:23 当前任务提示
 
@@ -298,7 +300,7 @@ def display_progress_bar(current, total, description=""):
 # Functions in this section handle configuration loading and logging.
 # These include `load_config`, `trace_debug`, and `log_debug`.
 
-def load_config(config_path):
+def load_config(config_path: str) -> Dict[str, Any]:
     """
     从 YAML 文件加载配置。
 
@@ -322,7 +324,7 @@ def load_config(config_path):
 # These include `validate_metadata_mappings`, `read_metadata_lines`,
 # `process_metadata_line`, `apply_metadata_actions`, and `generate_metadata_tasks`.
 
-def validate_metadata_mappings(lines, config):
+def validate_metadata_mappings(lines: List[str], config: Dict[str, Any]) -> None:
     """
     根据规则验证元数据值并跟踪未映射的元数据。
 
@@ -350,7 +352,7 @@ def validate_metadata_mappings(lines, config):
                     unmapped_metadata.setdefault(key, set()).add(value.strip())
     debug(f"验证元数据映射完成: {unmapped_metadata}", LOG_LEVEL_DEBUG, config)
 
-def read_metadata_lines(md_file, config):
+def read_metadata_lines(md_file: Union[str, Path], config: Dict[str, Any]) -> List[str]:
     """
     从 Markdown 文件中提取元数据行。
 
@@ -402,7 +404,7 @@ def read_metadata_lines(md_file, config):
     debug(f"从 {md_file} 提取的元数据行: {metadata_lines}", LOG_LEVEL_DEBUG, config)
     return metadata_lines
 
-def process_metadata_line(line, config):
+def process_metadata_line(line: str, config: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     处理单行元数据并根据规则生成任务。
 
@@ -447,7 +449,7 @@ def process_metadata_line(line, config):
         
     return tasks
 
-def apply_metadata_actions(key, value, actions, config):
+def apply_metadata_actions(key: str, value: str, actions: List[Dict[str, Any]], config: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     对键值对应用元数据操作（如 modify_value、append_after、rename）。
 
@@ -507,13 +509,16 @@ def apply_metadata_actions(key, value, actions, config):
         })
     return tasks
 
-def generate_metadata_tasks(md_file, config):
+def generate_metadata_tasks(md_file: Union[str, Path], config: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     解析 Markdown 文件中的元数据并生成转换任务。
 
     参数:
         md_file (str 或 Path): Markdown 文件的路径
         config (dict): 配置字典，包含元数据规则
+
+    返回:
+        list: 转换任务列表
     """
     tasks = []
     metadata_lines = read_metadata_lines(md_file, config)
@@ -529,7 +534,7 @@ def generate_metadata_tasks(md_file, config):
 # These include `initialize_scan_stats`, `scan_markdown_file`,
 # `scan_attachments`, `generate_rename_markdown_task`, and `scan_directory`.
 
-def initialize_scan_stats():
+def initialize_scan_stats() -> Dict[str, Any]:
     """
     初始化扫描过程的统计信息和变量。
 
@@ -547,7 +552,7 @@ def initialize_scan_stats():
     }
 
 
-def scan_markdown_file(file, root, directory, resource_dir, tasks, config):
+def scan_markdown_file(file: str, root: str, directory: str, resource_dir: Path, tasks: List[Dict[str, Any]], config: Dict[str, Any]) -> None:
     """
     处理单个 Markdown 文件。
 
@@ -595,7 +600,7 @@ def scan_markdown_file(file, root, directory, resource_dir, tasks, config):
 
     debug(f"✅ 5.Finished processing Markdown file: {file}", LOG_LEVEL_DEBUG, config)  # Changed to DEBUG
 
-def scan_attachments(original_path, directory, resource_dir, tasks, config):
+def scan_attachments(original_path: Path, directory: str, resource_dir: Path, tasks: List[Dict[str, Any]], config: Dict[str, Any]) -> Dict[str, str]:
     """
     处理给定 Markdown 文件的附件。
 
@@ -711,7 +716,7 @@ def scan_attachments(original_path, directory, resource_dir, tasks, config):
 
     return path_mapping
 
-def generate_rename_markdown_task(original_path, directory, tasks):
+def generate_rename_markdown_task(original_path: Path, directory: str, tasks: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """
     通过移除 UID 并解决冲突来重命名 Markdown 文件。
 
@@ -735,7 +740,7 @@ def generate_rename_markdown_task(original_path, directory, tasks):
     return rename_task
 
 
-def scan_directory(directory, attachment_output_path, config):
+def scan_directory(directory: str, attachment_output_path: str, config: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     扫描目录中的 Markdown 文件并生成处理任务。
 
@@ -789,7 +794,7 @@ def scan_directory(directory, attachment_output_path, config):
 # Functions in this section handle task execution.
 # These include `execute_task` and `execute_tasks`.
 
-def execute_task(task, config):
+def execute_task(task: Dict[str, Any], config: Dict[str, Any]) -> None:
     """
     根据任务类型执行单个任务。
 
@@ -830,7 +835,7 @@ def execute_task(task, config):
         else:
             debug(f"⚠️ 清理目标不存在: {dest_path}", LOG_LEVEL_ERROR, config)
 
-def execute_tasks(tasks, config):
+def execute_tasks(tasks: List[Dict[str, Any]], config: Dict[str, Any]) -> None:
     """
     按生成顺序执行任务列表。
 
@@ -878,7 +883,7 @@ def execute_tasks(tasks, config):
 # Functions in this section handle metadata transformation.
 # These include `apply_action`, `transform_metadata`, `update_references_in_markdown`, and `map_metadata`.
 
-def apply_action(key, value, action, config):
+def apply_action(key: str, value: str, action: Dict[str, Any], config: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
     """
     对键值对应用元数据转换操作。
 
@@ -926,7 +931,7 @@ def apply_action(key, value, action, config):
         debug(f"⚠️ Unsupported action type '{action_type}' for key '{key}'", LOG_LEVEL_ERROR, config)
         return key, value
 
-def transform_metadata(lines, config):
+def transform_metadata(lines: List[str], config: Dict[str, Any]) -> List[str]:
     """
     根据规则转换元数据行。
 
@@ -974,7 +979,7 @@ def transform_metadata(lines, config):
 
     return transformed_lines
 
-def update_references_in_markdown(file, path_mapping, config):
+def update_references_in_markdown(file: Union[str, Path], path_mapping: Dict[str, str], config: Dict[str, Any]) -> None:
     """
     更新 Markdown 文件中的引用并转换元数据。
 
@@ -1010,7 +1015,7 @@ def update_references_in_markdown(file, path_mapping, config):
 
     debug(f"更新文件 {file} 中的引用完成", LOG_LEVEL_ACTION, config)
 
-def map_metadata(file, config):
+def map_metadata(file: Union[str, Path], config: Dict[str, Any]) -> None:
     """
     映射并转换 Markdown 文件中的元数据。
 
@@ -1057,7 +1062,7 @@ def map_metadata(file, config):
 # These include `print_introduction`, `parse_arguments`, `load_and_configure`,
 # `print_statistics`, `confirm_execution`, `print_final_statistics`, and `main`.
 
-def print_introduction():
+def print_introduction() -> None:
     """
     打印脚本的简要介绍。
     """
@@ -1080,7 +1085,7 @@ Get started by running with a directory path.
 """
     print(intro)
 
-def parse_arguments():
+def parse_arguments() -> argparse.ArgumentParser:
     """
     解析命令行参数。
     """
@@ -1097,7 +1102,7 @@ def parse_arguments():
     parser.add_argument("--reset-log", action="store_true", help="Clear the log file before starting")
     return parser
 
-def load_and_configure(args):
+def load_and_configure(args: argparse.Namespace) -> Dict[str, Any]:
     """
     从文件加载配置并应用命令行参数覆盖。
 
@@ -1126,7 +1131,7 @@ def load_and_configure(args):
 
     return config
 
-def print_statistics(config, tasks):
+def print_statistics(config: Dict[str, Any], tasks: List[Dict[str, Any]]) -> None:
     """
     打印总结任务的统计信息。
 
@@ -1178,7 +1183,7 @@ def print_statistics(config, tasks):
             for value in values:
                 print(f"    • {value}")
 
-def confirm_execution():
+def confirm_execution() -> bool:
     """
     在执行任务列表之前提示用户确认。
 
@@ -1188,7 +1193,7 @@ def confirm_execution():
     response = input("Do you want to proceed with the tasks? (yes/no): ").strip().lower()
     return response in ["yes", "y"]
 
-def print_final_statistics(tasks, execution_time, config):
+def print_final_statistics(tasks: List[Dict[str, Any]], execution_time: float, config: Dict[str, Any]) -> None:
     """
     在执行任务后打印最终统计信息。
 
@@ -1205,7 +1210,7 @@ def print_final_statistics(tasks, execution_time, config):
     if config.get("log_debug", False):
         debug(f"Task execution completed in {execution_time:.2f} seconds", LOG_LEVEL_ACTION, config)
 
-def main():
+def main() -> None:
     """
     主函数，用于协调 Obsidian 导入过程。
     """
