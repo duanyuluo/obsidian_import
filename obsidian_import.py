@@ -471,7 +471,24 @@ def process_metadata_line(line: str, config: Dict[str, Any]) -> List[Dict[str, A
     if any(action.get("type") == "retain" for action in actions) and len(actions) == 1:
         return []
 
-    tasks = apply_metadata_actions(key, value, actions, config)
+    tasks = []
+
+    # Handle `insert` actions
+    for action in actions:
+        if action.get("type") == "insert":
+            tasks.append({
+                "type": "INSERT_CONTENT",
+                "position": action.get("at", "before"),  # Use 'at' parameter for position
+                "content": action.get("content", ""),
+                "key": key,
+                "file": config.get("current_file"),
+                "id": generate_task_id(),
+                "is_pre_task": True,  # Mark as a preprocessing task
+                "status": "todo"
+            })
+
+    # Handle other metadata actions
+    tasks.extend(apply_metadata_actions(key, value, actions, config))
     
     # Log each metadata task that was generated
     for task in tasks:
@@ -607,15 +624,51 @@ def scan_markdown_file(file: str, root: str, directory: str, resource_dir: Path,
     debug("🛠️ 1.Generating metadata transformation tasks...", LOG_LEVEL_DEBUG, config)  # Changed to DEBUG
     config["current_file"] = str(original_path)  # 设置当前文件路径
     metadata_tasks = generate_metadata_tasks(original_path, config)
-    tasks.extend(metadata_tasks)
-    config["stats"]["metadata_tasks"] += len(metadata_tasks)
+
+    if metadata_tasks:
+        # 获取第一条和最后一条元数据任务的 key
+        first_metadata_key = metadata_tasks[0].get("key")
+        last_metadata_key = metadata_tasks[-1].get("key")
+
+        # 根据 config 插入元数据分隔符任务
+        metadata_section_rules = config.get("metadata_section_rules", [])
+        for rule in metadata_section_rules:
+            if rule["type"] == "insert" and rule["position"] == "first":
+                tasks.append({
+                    "type": "INSERT_CONTENT",
+                    "file": original_path,
+                    "position": "before",
+                    "content": rule["content"],
+                    "key": first_metadata_key,
+                    "is_pre_task": True,
+                    "status": "todo",
+                    "id": generate_task_id()
+                })
+                debug(f"➕ Added metadata section start task for {original_path}", LOG_LEVEL_ACTION, config)
+
+            if rule["type"] == "insert" and rule["position"] == "last":
+                tasks.append({
+                    "type": "INSERT_CONTENT",
+                    "file": original_path,
+                    "position": "after",
+                    "content": rule["content"],
+                    "key": last_metadata_key,
+                    "is_pre_task": True,
+                    "status": "todo",
+                    "id": generate_task_id()
+                })
+                debug(f"➕ Added metadata section end task for {original_path}", LOG_LEVEL_ACTION, config)
+
+        # 添加元数据任务
+        tasks.extend(metadata_tasks)
+        config["stats"]["metadata_tasks"] += len(metadata_tasks)
 
     # Step 2: Process attachments
     debug("📦 2.Processing attachments...", LOG_LEVEL_DEBUG, config)  # Changed to DEBUG
     file_path_mapping = scan_attachments(original_path, directory, resource_dir, tasks, config)
 
     # Step 3: Update references in Markdown file
-    debug("🔗 3.Updating references in Markdown file...", LOG_LEVEL_DEBUG, config)  # Changed to DEBUG
+    debug("🔗 3.Updating references in Markdown file...", LOG_LEVEL_DEBUG, config)
     if file_path_mapping:  # Only add the task if path_mapping is not empty
         update_task = {
             "type": TaskType.UPDATE_ATTACH_REF.value,
@@ -627,12 +680,12 @@ def scan_markdown_file(file: str, root: str, directory: str, resource_dir: Path,
         tasks.append(update_task)
 
     # Step 4: Rename Markdown file
-    debug("✏️ 4.Renaming Markdown file...", LOG_LEVEL_DEBUG, config)  # Changed to DEBUG
+    debug("✏️ 4.Renaming Markdown file...", LOG_LEVEL_DEBUG, config)
     rename_task = generate_rename_markdown_task(original_path, directory, tasks)
     if rename_task:
         debug(f"➕ Added rename task: {rename_task}", LOG_LEVEL_ACTION, config)
 
-    debug(f"✅ 5.Finished processing Markdown file: {file}", LOG_LEVEL_DEBUG, config)  # Changed to DEBUG
+    debug(f"✅ 5.Finished processing Markdown file: {file}", LOG_LEVEL_DEBUG, config)
 
 def scan_attachments(original_path: Path, directory: str, resource_dir: Path, tasks: List[Dict[str, Any]], config: Dict[str, Any]) -> Dict[str, str]:
     """
@@ -891,6 +944,9 @@ def execute_task(task: Dict[str, Any], config: Dict[str, Any]) -> None:
         elif task["type"] == TaskType.TRANSFORM_METADATA.value:
             debug(f"🛠️ 转换文件中的元数据: {task}", LOG_LEVEL_ACTION, config)
             map_metadata(task["file"], config)
+        elif task["type"] == "INSERT_CONTENT":
+            debug(f"✏️ 插入内容: {task}", LOG_LEVEL_ACTION, config)
+            insert_content_in_file(task, config)
         elif task["type"] == TaskType.CLEANUP.value:
             debug(f"🗑️ 清理目标: {task}", LOG_LEVEL_ACTION, config)
             dest_path = Path(task["dest"])  # 确保 dest 是 Path 对象
@@ -908,6 +964,7 @@ def execute_task(task: Dict[str, Any], config: Dict[str, Any]) -> None:
             else:
                 debug(f"⚠️ 清理目标不存在: {dest_path}", LOG_LEVEL_ERROR, config)
         task["status"] = "done"  # Mark task as done
+        debug(f"✅ Task completed: {task['type']} (ID: {task['id']}, Status: {task['status']})", LOG_LEVEL_DEBUG, config)
     except Exception as e:
         debug(f"Task failed: {task}. Error: {e}", LOG_LEVEL_ERROR, config)
         task["status"] = "fail"  # Mark task as failed
@@ -964,6 +1021,42 @@ def execute_tasks(tasks: List[Dict[str, Any]], config: Dict[str, Any]) -> None:
 
 # Functions in this section handle metadata transformation.
 # These include `apply_action`, `transform_metadata`, `update_references_in_markdown`, and `map_metadata`.
+
+def insert_content_in_file(task: Dict[str, Any], config: Dict[str, Any]) -> None:
+    """
+    在文件中插入内容。
+
+    参数:
+        task (dict): 包含插入内容的任务
+        config (dict): 配置字典
+    """
+    file_path = task["file"]
+    position = task["position"]
+    content = task["content"]
+    key = task["key"]
+
+    file_handle = safe_open_file(file_path, "r")
+    if not file_handle:
+        return
+
+    with file_handle:
+        lines = file_handle.readlines()
+
+    updated_lines = []
+    for line in lines:
+        if position == "before" and line.startswith(f"{key}:"):
+            updated_lines.append(content + "\n")
+        updated_lines.append(line)
+        if position == "after" and line.startswith(f"{key}:"):
+            updated_lines.append(content + "\n")
+
+    file_handle = safe_open_file(file_path, "w")
+    if file_handle:
+        with file_handle:
+            file_handle.writelines(updated_lines)
+
+    task["status"] = "done"  # Mark task as done
+    debug(f"✅ 插入内容完成: {task}", LOG_LEVEL_ACTION, config)
 
 def apply_action(key: str, value: str, action: Dict[str, Any], config: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
     """
@@ -1258,8 +1351,19 @@ def print_statistics(config: Dict[str, Any], tasks: List[Dict[str, Any]]) -> Non
     # Only print preprocessing tasks when they exist
     if pre_tasks:
         print("└─ 🔄 Preprocessing Tasks")
-        for i, task in enumerate(pre_tasks):
-            prefix = "   └─" if i == len(pre_tasks) - 1 else "   ├─"
+        # Count INSERT_CONTENT tasks
+        insert_content_tasks = [t for t in pre_tasks if t.get('type') == "INSERT_CONTENT"]
+        other_pre_tasks = [t for t in pre_tasks if t.get('type') != "INSERT_CONTENT"]
+        
+        # Display count of INSERT_CONTENT tasks if there are any
+        if insert_content_tasks:
+            prefix = "   ├─" if other_pre_tasks else "   └─"
+            print(f"{prefix} INSERT_CONTENT              : {len(insert_content_tasks)} tasks")
+        
+        # Display other preprocessing tasks individually
+        for i, task in enumerate(other_pre_tasks):
+            is_last = i == len(other_pre_tasks) - 1
+            prefix = "   └─" if is_last else "   ├─"
             task_src = task.get('src', task.get('file', 'N/A'))
             if isinstance(task_src, Path):
                 task_src = task_src.name

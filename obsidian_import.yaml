@@ -4,6 +4,17 @@
 attachment_output_path: Resource
 trash_output_path: Trash
 
+# Global actions for metadata processing
+metadata_section_rules:
+  - type: insert
+    content: "---"
+    position: first
+    at: before
+  - type: insert
+    content: "---"
+    position: last
+    at: after
+
 # Metadata transformation rules
 metadata_rules:
   Catalog:
