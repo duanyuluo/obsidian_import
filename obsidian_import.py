@@ -157,12 +157,40 @@ def debug(message: str, level: str, config: Dict[str, Any]) -> None:
             log_file_handle.write(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {log_message}\n")
             log_file_handle.flush()  # 确保日志立即写入文件
         except Exception as e:
-            print(f"❌ Error writing to log file: {e}")
+            print(f"Error writing to log file: {e}")
 
     # 如果是错误级别日志，增加错误计数
     if level == LOG_LEVEL_ERROR and "stats" in config:
         config["stats"]["errors"] += 1
 
+def probe_path(path: Union[str, Path], config: Dict[str, Any]) -> str:
+    """
+    探测路径，判断是目录、文件还是不存在。
+
+    参数:
+        path (str 或 Path): 要探测的路径
+        config (Dict[str, Any], optional): 配置字典，用于记录错误
+
+    返回:
+        str: 路径类型描述 - "directory"、"file"、"not_exist" 或 "error"
+    """
+    try:
+        path_obj = Path(path) if isinstance(path, str) else path
+        
+        if not path_obj.exists():
+            return "not_exist"
+        elif path_obj.is_dir():
+            return "directory"
+        elif path_obj.is_file():
+            return "file"
+        else:
+            # 可能是符号链接或其他特殊文件
+            return "other"
+    except Exception as e:
+        if config is not None:
+            debug(f"Error probing path {path}: {e}", LOG_LEVEL_ERROR, config)
+        return "error"
+    
 def safe_open_file(file_path: str, mode: str, encoding: str = "utf-8") -> Optional[typing.IO]:
     """
     安全地打开文件，处理可能的异常。
@@ -639,11 +667,11 @@ def scan_attachments(original_path: Path, directory: str, resource_dir: Path, ta
     with open(original_path, "r") as f:
         content = f.read()
     if not content:
-        debug(f"❌ Error: Empty Markdown file {original_path}, skipping attachment processing", LOG_LEVEL_ERROR, config)
+        debug(f"Error: Empty Markdown file {original_path}, skipping attachment processing", LOG_LEVEL_ERROR, config)
         return {}
     
     # Match Markdown links for images, videos, and PDFs
-    attachment_references = re.findall(r"!\[.*?\]\((.*?)\)", content)  # Match Markdown image/video/PDF links
+    attachment_references = re.findall(r"!?\[.*?\]\((.*?)\)", content)  # Match Markdown image/video/PDF links
 
     # Filter out network attachments (e.g., http:// or https://)
     local_references = []
@@ -662,11 +690,22 @@ def scan_attachments(original_path: Path, directory: str, resource_dir: Path, ta
     moved_files_count = 0  # Track the number of moved files
 
     # Supported attachment extensions
-    supported_extensions = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".mp4", ".mov", ".avi", ".mkv", ".pdf"}
+    supported_extensions = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".mp4", ".mov", ".avi", ".mkv", ".pdf", ".heic", ".webp", ".qt", ".m4a", ".mp3", ".wav"}
 
     for ref in local_references:
         ref_path = Path(directory) / unquote(ref)
-        if ref_path.is_file() and ref_path.suffix.lower() in supported_extensions:
+        ref_path_type = probe_path(ref_path, config)
+        if ref_path_type in ["not_exist", "error"]:
+            debug(f"Attachment not found: {ref}", LOG_LEVEL_ERROR, config)
+            config["stats"]["errors"] += 1
+            continue
+
+        if ref_path.is_file():
+            if ref_path.suffix.lower() not in supported_extensions:
+                debug(f"Unsupported attachment extension: {ref_path.suffix} in file {ref_path}", LOG_LEVEL_ERROR, config)
+                config["stats"]["errors"] += 1  # Increment error count
+                continue     
+
             if attachment_dir and ref_path.parent == attachment_dir:
                 # 当前 Markdown 文件的附件
                 moved_files_count += 1
@@ -853,8 +892,9 @@ def execute_task(task: Dict[str, Any], config: Dict[str, Any]) -> None:
                 debug(f"⚠️ 清理目标不存在: {dest_path}", LOG_LEVEL_ERROR, config)
         task["status"] = "done"  # Mark task as done
     except Exception as e:
-        debug(f"❌ Task failed: {task}. Error: {e}", LOG_LEVEL_ERROR, config)
+        debug(f"Task failed: {task}. Error: {e}", LOG_LEVEL_ERROR, config)
         task["status"] = "fail"  # Mark task as failed
+        raise e
 
 def execute_tasks(tasks: List[Dict[str, Any]], config: Dict[str, Any]) -> None:
     """
@@ -1135,13 +1175,13 @@ def load_and_configure(args: argparse.Namespace) -> Dict[str, Any]:
     """
     # 检查配置文件是否存在
     if args.config and not os.path.isfile(args.config):
-        print(f"❌ Error: Configuration file '{args.config}' does not exist.")
+        debug(f"Error: Configuration file '{args.config}' does not exist.", LOG_LEVEL_ERROR, {})
         sys.exit(1)
 
     # 尝试加载配置文件
     config = load_config(args.config)
     if not config:
-        print(f"❌ Error: Failed to load configuration file '{args.config}'.")
+        debug(f"Error: Failed to load configuration file '{args.config}'.", LOG_LEVEL_ERROR, {})
         sys.exit(1)
 
     # Apply command-line overrides
@@ -1154,34 +1194,34 @@ def load_and_configure(args: argparse.Namespace) -> Dict[str, Any]:
 
 def print_statistics(config: Dict[str, Any], tasks: List[Dict[str, Any]]) -> None:
     """
-    打印总结任务的统计信息。
+    Print task summary statistics in a tree structure.
 
-    参数:
-        config (dict): 配置字典
-        tasks (list): 扫描期间生成的任务列表
+    Parameters:
+        config (dict): Configuration dictionary
+        tasks (list): Tasks generated during scanning
     """
     stats = config["stats"]
     unmapped_metadata = stats.get("unmapped_metadata", {})
     
-    # 如果有进度条，确保在打印统计信息前完成进度条
+    # If there's a progress bar, make sure it's completed before printing statistics
     if hasattr(display_progress_bar, "last_line"):
         sys.stdout.write("\n")
         sys.stdout.flush()
     
-    # 统计预处理任务数量
-    pre_tasks = [task for task in tasks if task.get("is_pre_task", False)]
+    # Count preprocessing tasks
+    pre_tasks = [task for task in tasks if task.get("is_pre_task", False) and task.get("status") == "todo"]
 
-    print("\n📊 扫描统计信息:")
-    print("-------------------")
-    print(f"处理的 Markdown 文件数量: {stats.get('markdown_files', 0)}")
-    print(f"处理的附件数量: {stats.get('attachments', 0)}")
-    print(f"元数据转换任务数量: {stats.get('metadata_tasks', 0)}")
-    print(f"预处理任务数量: {len(pre_tasks)}")  # 显示预处理任务数量
-    print(f"未映射的元数据条目数量: {len(unmapped_metadata)}")  # 显示未映射元数据的数量
-    print(f"扫描阶段错误数量: {stats.get('errors', 0)}")
-    print(f"生成的总任务数量: {len(tasks)}")
+    print("\n📊 Import Statistics")
+    print("├─ 📝 Summary")
+    print(f"│  ├─ Processed Markdown files:    {stats.get('markdown_files', 0)}")
+    print(f"│  ├─ Processed attachments:       {stats.get('attachments', 0)}")
+    print(f"│  ├─ Metadata conversion tasks:   {stats.get('metadata_tasks', 0)}")
+    print(f"│  ├─ Preprocessing tasks:         {len(pre_tasks)}")
+    print(f"│  ├─ Unmapped metadata entries:   {len(unmapped_metadata)}")
+    print(f"│  ├─ Scanning phase errors:       {stats.get('errors', 0)}")
+    print(f"│  └─ Total tasks generated:       {len(tasks)}")
 
-    print("\n📋 任务摘要:")
+    print("├─ 🔍 Details")
     task_counts = {}
     for task in tasks:
         task_type = task['type']
@@ -1189,22 +1229,38 @@ def print_statistics(config: Dict[str, Any], tasks: List[Dict[str, Any]]) -> Non
             task_counts[task_type] = 0
         task_counts[task_type] += 1
 
-    for task_type, count in task_counts.items():
-        print(f"  • {task_type}: {count} 个任务")
+    task_types = list(task_counts.keys())
+    for i, task_type in enumerate(task_types):
+        prefix = "│  └─" if i == len(task_types) - 1 else "│  ├─"
+        print(f"{prefix} {task_type:20}: {task_counts[task_type]} tasks")
 
-    # 只有当存在预处理任务时才打印
+    # Only print preprocessing tasks when they exist
     if pre_tasks:
-        print("\n📋 预处理任务:")
-        for task in pre_tasks:
-            print(f"  • {task['type']}: {task.get('src', task.get('file', 'N/A'))}")
+        print("└─ 🔄 Preprocessing Tasks")
+        for i, task in enumerate(pre_tasks):
+            prefix = "   └─" if i == len(pre_tasks) - 1 else "   ├─"
+            task_src = task.get('src', task.get('file', 'N/A'))
+            if isinstance(task_src, Path):
+                task_src = task_src.name
+            print(f"{prefix} {task['type']}: {task_src}")
+    else:
+        print("└─ 🔄 Preprocessing Tasks: None")
 
-    # 如果有未映射的元数据条目，单独列出
+    # If there are unmapped metadata entries, add a branch in the tree
     if unmapped_metadata:
-        print("\n⚠️ 未映射的元数据条目:")
-        for key, values in unmapped_metadata.items():
-            print(f"  - {key}: {len(values)} 个值")
-            for value in values:
-                print(f"    • {value}")
+        print("\n⚠️  Unmapped Metadata")
+        metadata_keys = list(unmapped_metadata.keys())
+        max_key_length = max([len(key) for key in metadata_keys], default=0)
+        
+        for i, key in enumerate(metadata_keys):
+            values = unmapped_metadata[key]
+            is_last_key = i == len(metadata_keys) - 1
+            key_prefix = "└─" if is_last_key else "├─"
+            print(f"{key_prefix} {key:{max_key_length}} : {len(values)} values")
+            
+            for j, value in enumerate(values):
+                value_prefix = "   └─" if j == len(values) - 1 else "   ├─"
+                print(f"{' ' if is_last_key else '│'}{value_prefix} {value}")
 
 def confirm_execution() -> bool:
     """
@@ -1268,7 +1324,7 @@ def main() -> None:
     # Step 2: Confirm execution
     print_statistics(config, tasks)
     if not confirm_execution():
-        print("❌ Execution cancelled by user.")
+        debug("Execution cancelled by user.", LOG_LEVEL_FLOW, config)
         return
     
     # Step 3: Execute tasks
