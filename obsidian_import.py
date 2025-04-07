@@ -161,6 +161,38 @@ def debug(message, level, config):
     if level == LOG_LEVEL_ERROR and "stats" in config:
         config["stats"]["errors"] += 1
 
+def safe_open_file(file_path, mode, encoding="utf-8"):
+    """
+    安全地打开文件，处理可能的异常。
+
+    参数:
+        file_path (str): 文件路径
+        mode (str): 打开模式
+        encoding (str): 文件编码
+
+    返回:
+        file object 或 None: 如果打开失败返回 None
+    """
+    try:
+        return open(file_path, mode, encoding=encoding)
+    except Exception as e:
+        print(f"❌ Error opening file {file_path}: {e}")
+        return None
+
+def safe_close_file(file_handle):
+    """
+    安全地关闭文件句柄，处理可能的异常。
+
+    参数:
+        file_handle (file object): 要关闭的文件句柄
+    """
+    try:
+        if file_handle:
+            file_handle.close()
+            print(f"✅ File closed successfully.")
+    except Exception as e:
+        print(f"❌ Error closing file: {e}")
+
 def initialize_log_file(config):
     """
     初始化日志文件。如果启用了 --reset 参数，则清空日志文件。
@@ -173,16 +205,12 @@ def initialize_log_file(config):
         config["log_file"] = "obsidian_import.log"
 
     if config.get("reset_log", False) and config.get("log_file"):
-        try:
-            if config.get("reset_log"):
-                config["log_file_handle"] = open(config["log_file"], "w")  # Overwrite mode
-                print(f"✅ Log file {config['log_file']} reset successfully.")
-            else:
-                config["log_file_handle"] = open(config["log_file"], "a")  # Append mode
-                print(f"✅ Log file {config['log_file']} opened for appending.")
+        mode = "w" if config.get("reset_log") else "a"
+        log_file_handle = safe_open_file(config["log_file"], mode)
+        if log_file_handle:
+            config["log_file_handle"] = log_file_handle
+            print(f"✅ Log file {config['log_file']} {'reset' if mode == 'w' else 'opened for appending'} successfully.")
             debug("Log file reset by user request", LOG_LEVEL_ACTION, config)
-        except Exception as e:
-            print(f"❌ Error resetting log file: {e}")
 
 def close_log_file(config):
     """
@@ -192,13 +220,8 @@ def close_log_file(config):
         config (dict): 配置字典
     """
     log_file_handle = config.get("log_file_handle")
-    if log_file_handle:
-        try:
-            log_file_handle.close()
-            print(f"✅ Log file {config['log_file']} closed successfully.")
-        except Exception as e:
-            print(f"❌ Error closing log file: {e}")
-            
+    safe_close_file(log_file_handle)
+
 #############################################################
 # PROGRESS BAR FUNCTION
 #############################################################
@@ -285,11 +308,10 @@ def load_config(config_path):
     返回:
         dict: 配置字典，如果加载失败则返回空字典
     """
-    try:
-        with open(config_path, "r", encoding="utf-8") as f:  # Added encoding
-            return yaml.safe_load(f)
-    except Exception as e:
-        print(f"Error loading configuration file {config_path}: {e}")
+    file_handle = safe_open_file(config_path, "r")
+    if file_handle:
+        with file_handle:
+            return yaml.safe_load(file_handle)
     return {}
 
 #############################################################
@@ -337,52 +359,48 @@ def read_metadata_lines(md_file, config):
         config (dict): 配置字典，包含元数据规则
     """
     metadata_rules = config.get("metadata_rules", {})
-    try:
-        with open(md_file, "r", encoding="utf-8") as f:
-            content = f.readlines()
+    with open(md_file, "r", encoding="utf-8") as f:
+        content = f.readlines()
 
-        debug(f"Reading metadata lines from {md_file}", LOG_LEVEL_DEBUG, config)
+    debug(f"Reading metadata lines from {md_file}", LOG_LEVEL_DEBUG, config)
 
-        # Step 1: Read the first 10 lines
-        first_10_lines = content[:10]
+    # Step 1: Read the first 10 lines
+    first_10_lines = content[:10]
 
-        # Step 2: Check for a match in metadata_rules
-        metadata_start = -1
-        for i, line in enumerate(first_10_lines):
-            if line.strip().startswith("#"):  # Skip comment lines
-                continue
-            key, sep, _ = line.partition(": ")
-            if sep and key.strip() in metadata_rules:
-                metadata_start = i
-                break
+    # Step 2: Check for a match in metadata_rules
+    metadata_start = -1
+    for i, line in enumerate(first_10_lines):
+        if line.strip().startswith("#"):  # Skip comment lines
+            continue
+        key, sep, _ = line.partition(": ")
+        if sep and key.strip() in metadata_rules:
+            metadata_start = i
+            break
 
-        if metadata_start == -1:
-            debug(f"No metadata match found in the first 10 lines of {md_file}", LOG_LEVEL_DEBUG, config)
-            return []
+    if metadata_start == -1:
+        debug(f"No metadata match found in the first 10 lines of {md_file}", LOG_LEVEL_DEBUG, config)
+        return []
 
-        # Step 3: Expand the metadata region
-        metadata_lines = []
-        # Search backward
-        for i in range(metadata_start, -1, -1):
-            line = content[i].strip()
-            if not line or line == "---":  # Stop at empty or "---" lines
-                break
-            if ": " in line:  # Include lines with "key: value" format
-                metadata_lines.insert(0, line)
+    # Step 3: Expand the metadata region
+    metadata_lines = []
+    # Search backward
+    for i in range(metadata_start, -1, -1):
+        line = content[i].strip()
+        if not line or line == "---":  # Stop at empty or "---" lines
+            break
+        if ": " in line:  # Include lines with "key: value" format
+            metadata_lines.insert(0, line)
 
-        # Search forward
-        for i in range(metadata_start + 1, len(content)):
-            line = content[i].strip()
-            if not line or line == "---":  # Stop at empty or "---" lines
-                break
-            if ": " in line:  # Include lines with "key: value" format
-                metadata_lines.append(line)
+    # Search forward
+    for i in range(metadata_start + 1, len(content)):
+        line = content[i].strip()
+        if not line or line == "---":  # Stop at empty or "---" lines
+            break
+        if ": " in line:  # Include lines with "key: value" format
+            metadata_lines.append(line)
 
-        debug(f"从 {md_file} 提取的元数据行: {metadata_lines}", LOG_LEVEL_DEBUG, config)
-        return metadata_lines
-    except Exception as e:
-        debug(f"Error reading metadata from {md_file}: {e}", LOG_LEVEL_ERROR, config)
-    return []
+    debug(f"从 {md_file} 提取的元数据行: {metadata_lines}", LOG_LEVEL_DEBUG, config)
+    return metadata_lines
 
 def process_metadata_line(line, config):
     """
@@ -482,8 +500,8 @@ def apply_metadata_actions(key, value, actions, config):
         tasks.append({
             "type": TaskType.TRANSFORM_METADATA.value,
             "key": key,
-            "original_line": f"{key}: {value}",
-            "new_line": f"{current_key}: {current_value}",
+            "old": f"{key}: {value}",
+            "new": f"{current_key}: {current_value}",
             "action": {"type": "replace"},
             "file": config.get("current_file")  # Ensure 'file' key is included
         })
@@ -571,7 +589,7 @@ def scan_markdown_file(file, root, directory, resource_dir, tasks, config):
 
     # Step 4: Rename Markdown file
     debug("✏️ 4.Renaming Markdown file...", LOG_LEVEL_DEBUG, config)  # Changed to DEBUG
-    rename_task = generate_rename_markdown_task(original_path, directory, tasks, config)
+    rename_task = generate_rename_markdown_task(original_path, directory, tasks)
     if rename_task:
         debug(f"➕ Added rename task: {rename_task}", LOG_LEVEL_ACTION, config)
 
@@ -610,9 +628,13 @@ def scan_attachments(original_path, directory, resource_dir, tasks, config):
                 break
 
     # Step 1: Check if the Markdown file contains attachment references
-            with open(original_path, "r") as f:
-                content = f.read()
-        attachment_references = re.findall(r"!\[.*?\]\((.*?)\)", content)  # Match Markdown image links
+    content = ""
+    with open(original_path, "r") as f:
+        content = f.read()
+    if not content:
+        debug(f"❌ Error: Empty Markdown file {original_path}, skipping attachment processing", LOG_LEVEL_ERROR, config)
+        return {}
+    attachment_references = re.findall(r"!\[.*?\]\((.*?)\)", content)  # Match Markdown image links
 
     # Filter out network attachments (e.g., http:// or https://)
     local_references = []
@@ -682,7 +704,7 @@ def scan_attachments(original_path, directory, resource_dir, tasks, config):
         if moved_files_count == len(attachment_files):
             cleanup_task = {
                 "type": TaskType.CLEANUP.value,
-                "attachment_dir": attachment_dir
+                "dest": attachment_dir
             }
             debug(f"➕ Added cleanup task: {cleanup_task}", LOG_LEVEL_ACTION, config)
             tasks.append(cleanup_task)
@@ -727,9 +749,7 @@ def scan_directory(directory, attachment_output_path, config):
         list: 生成的任务列表
     """
     tasks = []
-    pre_tasks = []  # 用于收集预处理任务的列表
     config["stats"] = initialize_scan_stats()  # 初始化统计信息
-    metadata_rules = config.get("metadata_rules", {})
     resource_dir = Path(directory) / attachment_output_path
     resource_dir.mkdir(exist_ok=True)
 
@@ -769,44 +789,46 @@ def scan_directory(directory, attachment_output_path, config):
 # Functions in this section handle task execution.
 # These include `execute_task` and `execute_tasks`.
 
-def execute_task(task, config, path_mapping):
+def execute_task(task, config):
     """
     根据任务类型执行单个任务。
 
     参数:
         task (dict): 要执行的任务
         config (dict): 配置字典
-        path_mapping (dict): 旧路径到新路径的映射
     """
-    try:
-        if task["type"] == TaskType.RENAME_MD.value:
-            debug(f"✏️ 重命名文件: {task['src']} -> {task['dest']}", LOG_LEVEL_ACTION, config)
-            Path(task["src"]).rename(task["dest"])
-            path_mapping[str(task["src"])] = str(task["dest"])
-        elif task["type"] == TaskType.MOVE_ATTACHMENT.value:
-            debug(f"📦 移动附件: {task['src']} -> {task['dest']}", LOG_LEVEL_ACTION, config)
-            Path(task["src"]).rename(task["dest"])
-        elif task["type"] == TaskType.COPY_ATTACHMENT.value:
-            debug(f"📋 复制附件: {task['src']} -> {task['dest']}", LOG_LEVEL_ACTION, config)
-            shutil.copy(task["src"], task["dest"])  # 执行复制操作
-            path_mapping[str(task["src"])] = str(task["dest"])  # 更新路径映射表
-        elif task["type"] == TaskType.UPDATE_ATTACH_REF.value:
-            debug(f"🔗 更新文件中的引用: {task['file']}", LOG_LEVEL_ACTION, config)
-            update_references_in_markdown(task["file"], task["path_mapping"], config.get("metadata_rules", {}), config)
-        elif task["type"] == TaskType.TRANSFORM_METADATA.value:
-            debug(f"🛠️ 转换文件中的元数据: {task['file']}", LOG_LEVEL_ACTION, config)
-            map_metadata(task["file"], config.get("metadata_rules", {}), config)
-        elif task["type"] == TaskType.CLEANUP.value:
-            debug(f"🗑️ 清理文件: {task['md_file']}", LOG_LEVEL_ACTION, config)
-            if task["md_file"].exists():
-                task["md_file"].unlink()
-            if task["attachment_dir"].exists():
-                shutil.rmtree(task["attachment_dir"])
-    except Exception as e:
-        debug(f"❌ 执行任务 {task['type']} 时出错 - 任务详情: {task}", LOG_LEVEL_ERROR, config)
-        debug(f"   错误信息: {e}", LOG_LEVEL_ERROR, config)
-        if config.get("stop_on_error", False):
-            raise
+    if task["type"] == TaskType.RENAME_MD.value:
+        debug(f"✏️ 重命名文件: {task['src']} -> {task['dest']}", LOG_LEVEL_ACTION, config)
+        Path(task["src"]).rename(task["dest"])
+    elif task["type"] == TaskType.MOVE_ATTACHMENT.value:
+        debug(f"📦 移动附件: {task['src']} -> {task['dest']}", LOG_LEVEL_ACTION, config)
+        Path(task["src"]).rename(task["dest"])
+    elif task["type"] == TaskType.COPY_ATTACHMENT.value:
+        debug(f"📋 复制附件: {task['src']} -> {task['dest']}", LOG_LEVEL_ACTION, config)
+        shutil.copy(task["src"], task["dest"])  # 执行复制操作
+    elif task["type"] == TaskType.UPDATE_ATTACH_REF.value:
+        debug(f"🔗 更新文件中的引用: {task['file']}", LOG_LEVEL_ACTION, config)
+        path_mapping = task.get("path_mapping", {})  # 从任务中获取 path_mapping
+        update_references_in_markdown(task["file"], path_mapping, config)
+    elif task["type"] == TaskType.TRANSFORM_METADATA.value:
+        debug(f"🛠️ 转换文件中的元数据: {task['file']}", LOG_LEVEL_ACTION, config)
+        map_metadata(task["file"], config)
+    elif task["type"] == TaskType.CLEANUP.value:
+        debug(f"🗑️ 清理目标: {task['dest']}", LOG_LEVEL_ACTION, config)
+        dest_path = Path(task["dest"])  # 确保 dest 是 Path 对象
+        if dest_path.exists():
+            if dest_path.is_file():
+                dest_path.unlink()  # 删除文件
+                debug(f"✅ 文件已删除: {dest_path}", LOG_LEVEL_ACTION, config)
+            elif dest_path.is_dir():
+                try:
+                    dest_path.rmdir()  # 尝试删除空目录
+                    debug(f"✅ 空目录已删除: {dest_path}", LOG_LEVEL_ACTION, config)
+                except OSError:
+                    shutil.rmtree(dest_path)  # 删除非空目录
+                    debug(f"✅ 非空目录已删除: {dest_path}", LOG_LEVEL_ACTION, config)
+        else:
+            debug(f"⚠️ 清理目标不存在: {dest_path}", LOG_LEVEL_ERROR, config)
 
 def execute_tasks(tasks, config):
     """
@@ -816,9 +838,6 @@ def execute_tasks(tasks, config):
         tasks (list): 要执行的任务列表
         config (dict): 配置字典
     """
-    path_mapping = {}
-    total_tasks = len(tasks)
-    
     # 重置进度条计时器
     if hasattr(display_progress_bar, "start_time"):
         delattr(display_progress_bar, "start_time")
@@ -830,7 +849,7 @@ def execute_tasks(tasks, config):
     debug(f"⚙️ Executing {len(pre_tasks)} pre-tasks...", LOG_LEVEL_FLOW, config)
     for i, task in enumerate(pre_tasks, start=1):
         debug(f"⚙️ Executing pre-task {i}/{len(pre_tasks)}: {task['type']}", LOG_LEVEL_DEBUG, config)
-        execute_task(task, config, path_mapping)
+        execute_task(task, config)
 
     debug(f"⚙️ Executing {len(main_tasks)} main tasks...", LOG_LEVEL_FLOW, config)
     for i, task in enumerate(main_tasks, start=1):
@@ -850,7 +869,7 @@ def execute_tasks(tasks, config):
             display_progress_bar(i, len(main_tasks), task_desc)
         
         debug(f"⚙️ Executing task {i}/{len(main_tasks)}: {task['type']}", LOG_LEVEL_DEBUG, config)
-        execute_task(task, config, path_mapping)
+        execute_task(task, config)
 
 #############################################################
 # METADATA TRANSFORMATION
@@ -964,30 +983,32 @@ def update_references_in_markdown(file, path_mapping, config):
         path_mapping (dict): 当前文件的旧路径到新路径的映射。
         config (dict, optional): 用于日志记录的配置。
     """
-    try:
-        with open(file, "r", encoding="utf-8") as f:  # Added encoding
-            content = f.readlines()
+    file_handle = safe_open_file(file, "r")
+    if not file_handle:
+        return
 
-        debug(f"Updating references and metadata in: {file}", LOG_LEVEL_DEBUG, config)
-        debug(f"Path mapping: {path_mapping}", LOG_LEVEL_DEBUG, config)
+    with file_handle:
+        content = file_handle.readlines()
 
-        # Update references
-        updated_content = []
-        for i, line in enumerate(content, start=1):
-            original_line = line
-            for old_path, new_path in path_mapping.items():
-                if old_path in line:
-                    encoded_new_path = quote(new_path)
-                    line = line.replace(old_path, encoded_new_path)
-                    debug(f"Line {i}:\n   Original: {original_line.strip()}\n   Updated:  {line.strip()}", LOG_LEVEL_DEBUG, config)
-            updated_content.append(line)
+    debug(f"Updating references and metadata in: {file}", LOG_LEVEL_DEBUG, config)
+    debug(f"Path mapping: {path_mapping}", LOG_LEVEL_DEBUG, config)
 
-        with open(file, "w", encoding="utf-8") as f:  # Added encoding
-            f.writelines(updated_content)
+    updated_content = []
+    for i, line in enumerate(content, start=1):
+        original_line = line
+        for old_path, new_path in path_mapping.items():
+            if old_path in line:
+                encoded_new_path = quote(new_path)
+                line = line.replace(old_path, encoded_new_path)
+                debug(f"Line {i}:\n   Original: {original_line.strip()}\n   Updated:  {line.strip()}", LOG_LEVEL_DEBUG, config)
+        updated_content.append(line)
 
-        debug(f"更新文件 {file} 中的引用完成", LOG_LEVEL_ACTION, config)
-    except Exception as e:
-        debug(f"❌ Error updating references in {file}: {e}", LOG_LEVEL_ERROR, config)
+    file_handle = safe_open_file(file, "w")
+    if file_handle:
+        with file_handle:
+            file_handle.writelines(updated_content)
+
+    debug(f"更新文件 {file} 中的引用完成", LOG_LEVEL_ACTION, config)
 
 def map_metadata(file, config):
     """
@@ -995,41 +1016,38 @@ def map_metadata(file, config):
 
     参数:
         file (str 或 Path): Markdown 文件的路径
-        metadata_rules (dict): 处理元数据的规则
         config (dict): 配置字典
     """
     metadata_rules = config.get("metadata_rules", {})
-    try:
-        rule_summary = {key: {"rules_found": len(value.get("actions", [])), 
-                    "types": [a.get("type") for a in value.get("actions", [])]} 
-                for key, value in metadata_rules.items()}
-        debug(f"📋 Metadata rules summary: {rule_summary}", LOG_LEVEL_DEBUG, config)
-        with open(file, "r", encoding="utf-8") as f:  # Added encoding
-            content = f.readlines()
+    file_handle = safe_open_file(file, "r")
+    if not file_handle:
+        return
 
-        metadata_end_index = 0
-        for i, line in enumerate(content):
-            if line.strip() == "":  # Assume metadata ends at the first blank line
-                metadata_end_index = i
-                break
+    with file_handle:
+        content = file_handle.readlines()
 
-        metadata_lines = content[:metadata_end_index]
-        transformed_metadata = transform_metadata(metadata_lines, metadata_rules, config)
+    metadata_end_index = 0
+    for i, line in enumerate(content):
+        if line.strip() == "":  # Assume metadata ends at the first blank line
+            metadata_end_index = i
+            break
 
-        debug(f"Metadata changes for {file}:", LOG_LEVEL_DEBUG, config)
-        for original, transformed in zip(metadata_lines, transformed_metadata):
-            if original.strip() != transformed.strip():
-                debug(f"   Original: {original.strip()}\n   Transformed: {transformed.strip()}", LOG_LEVEL_DEBUG, config)
-                debug(f"Transformed metadata in {file}: {original.strip()} -> {transformed.strip()}", LOG_LEVEL_ACTION, config)
+    metadata_lines = content[:metadata_end_index]
+    transformed_metadata = transform_metadata(metadata_lines, config)
 
-        content = transformed_metadata + content[metadata_end_index:]
+    debug(f"Metadata changes for {file}:", LOG_LEVEL_DEBUG, config)
+    for original, transformed in zip(metadata_lines, transformed_metadata):
+        if original.strip() != transformed.strip():
+            debug(f"   Original: {original.strip()}\n   Transformed: {transformed.strip()}", LOG_LEVEL_DEBUG, config)
 
-        with open(file, "w", encoding="utf-8") as f:  # Added encoding
-            f.writelines(content)
+    content = transformed_metadata + content[metadata_end_index:]
 
-        debug(f"映射文件 {file} 的元数据完成", LOG_LEVEL_ACTION, config)
-    except Exception as e:
-        debug(f"❌ Error mapping metadata in {file}: {e}", LOG_LEVEL_ERROR, config)
+    file_handle = safe_open_file(file, "w")
+    if file_handle:
+        with file_handle:
+            file_handle.writelines(content)
+
+    debug(f"映射文件 {file} 的元数据完成", LOG_LEVEL_ACTION, config)
 
 #############################################################
 # MAIN FUNCTION
@@ -1108,33 +1126,38 @@ def load_and_configure(args):
 
     return config
 
-def print_statistics(stats, tasks):
+def print_statistics(config, tasks):
     """
     打印总结任务的统计信息。
 
     参数:
-        stats (dict): 包含扫描统计信息的字典
-        unmapped_metadata (dict): 未映射元数据值的字典
+        config (dict): 配置字典
         tasks (list): 扫描期间生成的任务列表
     """
-    # 如果有进度条，确保在打印统计信息前完成进度条
+    stats = config["stats"]
     unmapped_metadata = stats.get("unmapped_metadata", {})
+    
+    # 如果有进度条，确保在打印统计信息前完成进度条
     if hasattr(display_progress_bar, "last_line"):
         sys.stdout.write("\n")
         sys.stdout.flush()
     
     # 统计预处理任务数量
-    pre_task_count = sum(1 for task in tasks if task.get("is_pre_task", False))
+    pre_tasks = [task for task in tasks if task.get("is_pre_task", False)]
 
     print("\n📊 扫描统计信息:")
     print("-------------------")
     print(f"处理的 Markdown 文件数量: {stats.get('markdown_files', 0)}")
     print(f"处理的附件数量: {stats.get('attachments', 0)}")
     print(f"元数据转换任务数量: {stats.get('metadata_tasks', 0)}")
-    print(f"预处理任务数量: {pre_task_count}")  # 显示预处理任务数量
-    print(f"未映射的元数据条目数量: {len(stats.get('unmapped_metadata', {}))}")  # 显示未映射元数据的数量
+    print(f"预处理任务数量: {len(pre_tasks)}")  # 显示预处理任务数量
+    print(f"未映射的元数据条目数量: {len(unmapped_metadata)}")  # 显示未映射元数据的数量
     print(f"扫描阶段错误数量: {stats.get('errors', 0)}")
     print(f"生成的总任务数量: {len(tasks)}")
+
+    print("\n📋 预处理任务:")
+    for task in pre_tasks:
+        print(f"  • {task['type']}: {task.get('src', task.get('file', 'N/A'))}")
 
     print("\n📋 任务摘要:")
     task_counts = {}
@@ -1148,9 +1171,9 @@ def print_statistics(stats, tasks):
         print(f"  • {task_type}: {count} 个任务")
 
     # 如果有未映射的元数据条目，单独列出
-    if stats.get("unmapped_metadata"):
+    if unmapped_metadata:
         print("\n⚠️ 未映射的元数据条目:")
-        for key, values in stats["unmapped_metadata"].items():
+        for key, values in unmapped_metadata.items():
             print(f"  - {key}: {len(values)} 个值")
             for value in values:
                 print(f"    • {value}")
@@ -1197,41 +1220,37 @@ def main():
     if not args.directory:
         parser.error("the following arguments are required: directory")
 
-    try:
-        config = load_and_configure(args)
-        
-        # Initialize the log file if requested
-        initialize_log_file(config)
-        
-        debug("🚀 Starting Obsidian Import Tool...", LOG_LEVEL_FLOW, config)
+    config = load_and_configure(args)
+    
+    # Initialize the log file if requested
+    initialize_log_file(config)
+    
+    debug("🚀 Starting Obsidian Import Tool...", LOG_LEVEL_FLOW, config)
 
-        directory = args.directory
-        attachment_output_path = config.get("attachment_output_path", "Resource")
+    directory = args.directory
+    attachment_output_path = config.get("attachment_output_path", "Resource")
 
-        if config.get("log_file"):
-            debug(f"Starting obsidian_import.py on {directory}", LOG_LEVEL_ACTION, config)
+    if config.get("log_file"):
+        debug(f"Starting obsidian_import.py on {directory}", LOG_LEVEL_ACTION, config)
 
-        # Step 1: Scan the directory
-        debug("🚀 Starting directory scan...", LOG_LEVEL_FLOW, config)
-        tasks = scan_directory(directory, attachment_output_path, config)
+    # Step 1: Scan the directory
+    debug("🚀 Starting directory scan...", LOG_LEVEL_FLOW, config)
+    tasks = scan_directory(directory, attachment_output_path, config)
 
-        # Step 2: Confirm execution
-        print_statistics(config["stats"], config["stats"]["unmapped_metadata"], tasks)
-        if not confirm_execution():
-            print("❌ Execution cancelled by user.")
-            return
-        
-        # Step 3: Execute tasks
-        debug("🚀 Executing tasks...", LOG_LEVEL_FLOW, config)
-        execute_tasks(tasks, config)
+    # Step 2: Confirm execution
+    print_statistics(config, tasks)
+    if not confirm_execution():
+        print("❌ Execution cancelled by user.")
+        return
+    
+    # Step 3: Execute tasks
+    debug("🚀 Executing tasks...", LOG_LEVEL_FLOW, config)
+    execute_tasks(tasks, config)
 
-        # Step 4: Print final statistics
-        stats = config["stats"]
-        print_statistics(stats, tasks)
-    except Exception as e:
-        debug(f"❌ Unexpected error: {e}", LOG_LEVEL_ERROR, None)
-    finally:
-        close_log_file(config)
+    # Step 4: Print final statistics
+    print_statistics(config, tasks)
+
+    close_log_file(config)
 
 if __name__ == "__main__":
     main()
