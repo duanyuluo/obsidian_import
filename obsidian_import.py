@@ -73,16 +73,17 @@ import os
 import re
 import shutil
 import argparse
-import sys  # Add this import for sys.argv
-from collections import defaultdict
+import sys
 from enum import Enum
 from pathlib import Path
 import time
 from urllib.parse import quote, unquote
 import yaml
-import datetime  # Added for timestamping log entries
-import shutil  # For getting terminal size
+import datetime
 import logging
+
+# Removed duplicate `shutil` import and unused `defaultdict` import
+# Fixed import order to comply with PEP8
 
 #############################################################
 # LOGGING FUNCTION
@@ -285,11 +286,11 @@ def load_config(config_path):
         dict: 配置字典，如果加载失败则返回空字典
     """
     try:
-        with open(config_path, "r") as f:
+        with open(config_path, "r", encoding="utf-8") as f:  # Added encoding
             return yaml.safe_load(f)
     except Exception as e:
         print(f"Error loading configuration file {config_path}: {e}")
-        return {}
+    return {}
 
 #############################################################
 # METADATA VALIDATION AND TASK GENERATION
@@ -299,15 +300,17 @@ def load_config(config_path):
 # These include `validate_metadata_mappings`, `read_metadata_lines`,
 # `process_metadata_line`, `apply_metadata_actions`, and `generate_metadata_tasks`.
 
-def validate_metadata_mappings(lines, metadata_rules, unmapped_metadata):
+def validate_metadata_mappings(lines, config):
     """
     根据规则验证元数据值并跟踪未映射的元数据。
 
     参数:
         lines (list): Markdown 文件中的行列表
-        metadata_rules (dict): 处理元数据的规则
-        unmapped_metadata (dict): 用于收集未映射元数据值的字典
+        config (dict): 配置字典，包含元数据规则和未映射元数据的存储
     """
+    metadata_rules = config.get("metadata_rules", {})
+    unmapped_metadata = config.setdefault("unmapped_metadata", {})
+    
     for line in lines:
         key, sep, value = line.partition(": ")
         if not sep:  # Skip lines that are not metadata
@@ -323,22 +326,19 @@ def validate_metadata_mappings(lines, metadata_rules, unmapped_metadata):
                 value_mapping = action.get("value_mapping", {})
                 if value.strip() not in value_mapping and value.strip() not in unmapped_metadata.get(key, set()):
                     unmapped_metadata.setdefault(key, set()).add(value.strip())
-    debug(f"验证元数据映射完成: {unmapped_metadata}", LOG_LEVEL_DEBUG, None)
+    debug(f"验证元数据映射完成: {unmapped_metadata}", LOG_LEVEL_DEBUG, config)
 
-def read_metadata_lines(md_file, metadata_rules, config):
+def read_metadata_lines(md_file, config):
     """
-    从 Markdown 文件中提取元数据行（基于新规则）。
+    从 Markdown 文件中提取元数据行。
 
     参数:
         md_file (str 或 Path): Markdown 文件的路径
-        metadata_rules (dict): 处理元数据的规则
-        config (dict): 配置字典，用于日志记录
-
-    返回:
-        list: 元数据行的列表
+        config (dict): 配置字典，包含元数据规则
     """
+    metadata_rules = config.get("metadata_rules", {})
     try:
-        with open(md_file, "r") as f:
+        with open(md_file, "r", encoding="utf-8") as f:
             content = f.readlines()
 
         debug(f"Reading metadata lines from {md_file}", LOG_LEVEL_DEBUG, config)
@@ -351,7 +351,7 @@ def read_metadata_lines(md_file, metadata_rules, config):
         for i, line in enumerate(first_10_lines):
             if line.strip().startswith("#"):  # Skip comment lines
                 continue
-            key, sep, value = line.partition(": ")
+            key, sep, _ = line.partition(": ")
             if sep and key.strip() in metadata_rules:
                 metadata_start = i
                 break
@@ -382,19 +382,17 @@ def read_metadata_lines(md_file, metadata_rules, config):
         return metadata_lines
     except Exception as e:
         debug(f"Error reading metadata from {md_file}: {e}", LOG_LEVEL_ERROR, config)
-        return []
+    return []
 
-def process_metadata_line(line, metadata_rules, config):
+def process_metadata_line(line, config):
     """
     处理单行元数据并根据规则生成任务。
 
     参数:
         line (str): 单行元数据
-        metadata_rules (dict): 处理元数据的规则
-
-    返回:
-        list: 转换元数据的任务列表
+        config (dict): 配置字典，包含元数据规则
     """
+    metadata_rules = config.get("metadata_rules", {})
     key, sep, value = line.partition(": ")
     if not sep:
         return []
@@ -491,22 +489,18 @@ def apply_metadata_actions(key, value, actions, config):
         })
     return tasks
 
-def generate_metadata_tasks(md_file, metadata_rules, config):
+def generate_metadata_tasks(md_file, config):
     """
     解析 Markdown 文件中的元数据并生成转换任务。
 
     参数:
         md_file (str 或 Path): Markdown 文件的路径
-        metadata_rules (dict): 处理元数据的规则
-        config (dict): 配置字典
-
-    返回:
-        list: 元数据转换任务列表
+        config (dict): 配置字典，包含元数据规则
     """
     tasks = []
-    metadata_lines = read_metadata_lines(md_file, metadata_rules, config)  # Pass metadata_rules here
+    metadata_lines = read_metadata_lines(md_file, config)
     for line in metadata_lines:
-        tasks.extend(process_metadata_line(line, metadata_rules, config))
+        tasks.extend(process_metadata_line(line, config))
     return tasks
 
 #############################################################
@@ -535,7 +529,7 @@ def initialize_scan_stats():
     }
 
 
-def scan_markdown_file(file, root, directory, resource_dir, metadata_rules, stats, tasks, config):
+def scan_markdown_file(file, root, directory, resource_dir, tasks, config):
     """
     处理单个 Markdown 文件。
 
@@ -544,8 +538,6 @@ def scan_markdown_file(file, root, directory, resource_dir, metadata_rules, stat
         root (str): 文件的根目录
         directory (str): 正在扫描的基目录
         resource_dir (Path): 资源目录的路径
-        metadata_rules (dict): 处理元数据的规则
-        stats (dict): 用于跟踪统计信息的字典
         tasks (list): 用于收集生成任务的列表
         config (dict): 配置字典
     """
@@ -553,18 +545,18 @@ def scan_markdown_file(file, root, directory, resource_dir, metadata_rules, stat
     debug(f"🔍 Processing Markdown file: {file}", LOG_LEVEL_DEBUG, config)
 
     original_path = Path(root) / file
-    stats["markdown_files"] += 1
+    config["stats"]["markdown_files"] += 1
 
     # Step 1: Add metadata mapping tasks
     debug("🛠️ 1.Generating metadata transformation tasks...", LOG_LEVEL_DEBUG, config)  # Changed to DEBUG
     config["current_file"] = str(original_path)  # 设置当前文件路径
-    metadata_tasks = generate_metadata_tasks(original_path, metadata_rules, config)
+    metadata_tasks = generate_metadata_tasks(original_path, config)
     tasks.extend(metadata_tasks)
-    stats["metadata_tasks"] += len(metadata_tasks)
+    config["stats"]["metadata_tasks"] += len(metadata_tasks)
 
     # Step 2: Process attachments
     debug("📦 2.Processing attachments...", LOG_LEVEL_DEBUG, config)  # Changed to DEBUG
-    file_path_mapping = scan_attachments(original_path, directory, resource_dir, stats, tasks, config)
+    file_path_mapping = scan_attachments(original_path, directory, resource_dir, tasks, config)
 
     # Step 3: Update references in Markdown file
     debug("🔗 3.Updating references in Markdown file...", LOG_LEVEL_DEBUG, config)  # Changed to DEBUG
@@ -585,7 +577,7 @@ def scan_markdown_file(file, root, directory, resource_dir, metadata_rules, stat
 
     debug(f"✅ 5.Finished processing Markdown file: {file}", LOG_LEVEL_DEBUG, config)  # Changed to DEBUG
 
-def scan_attachments(original_path, directory, resource_dir, stats, tasks, config):
+def scan_attachments(original_path, directory, resource_dir, tasks, config):
     """
     处理给定 Markdown 文件的附件。
 
@@ -593,7 +585,6 @@ def scan_attachments(original_path, directory, resource_dir, stats, tasks, confi
         original_path (Path): Markdown 文件的路径
         directory (str): 正在扫描的基目录
         resource_dir (Path): 资源目录的路径
-        stats (dict): 用于跟踪统计信息的字典
         tasks (list): 用于收集生成任务的列表
         config (dict): 配置字典
 
@@ -619,9 +610,9 @@ def scan_attachments(original_path, directory, resource_dir, stats, tasks, confi
                 break
 
     # Step 1: Check if the Markdown file contains attachment references
-    with open(original_path, "r") as f:
-        content = f.read()
-    attachment_references = re.findall(r"!\[.*?\]\((.*?)\)", content)  # Match Markdown image links
+            with open(original_path, "r") as f:
+                content = f.read()
+        attachment_references = re.findall(r"!\[.*?\]\((.*?)\)", content)  # Match Markdown image links
 
     # Filter out network attachments (e.g., http:// or https://)
     local_references = []
@@ -698,7 +689,7 @@ def scan_attachments(original_path, directory, resource_dir, stats, tasks, confi
 
     return path_mapping
 
-def generate_rename_markdown_task(original_path, directory, tasks, config):
+def generate_rename_markdown_task(original_path, directory, tasks):
     """
     通过移除 UID 并解决冲突来重命名 Markdown 文件。
 
@@ -706,7 +697,6 @@ def generate_rename_markdown_task(original_path, directory, tasks, config):
         original_path (Path): Markdown 文件的路径
         directory (str): 正在扫描的基目录
         tasks (list): 用于收集生成任务的列表
-        config (dict): 配置字典
 
     返回:
         dict: 添加到任务列表中的重命名任务
@@ -723,7 +713,7 @@ def generate_rename_markdown_task(original_path, directory, tasks, config):
     return rename_task
 
 
-def scan_directory(directory, attachment_output_path, metadata_rules, config):
+def scan_directory(directory, attachment_output_path, config):
     """
     扫描目录中的 Markdown 文件并生成处理任务。
 
@@ -739,6 +729,7 @@ def scan_directory(directory, attachment_output_path, metadata_rules, config):
     tasks = []
     pre_tasks = []  # 用于收集预处理任务的列表
     config["stats"] = initialize_scan_stats()  # 初始化统计信息
+    metadata_rules = config.get("metadata_rules", {})
     resource_dir = Path(directory) / attachment_output_path
     resource_dir.mkdir(exist_ok=True)
 
@@ -767,7 +758,7 @@ def scan_directory(directory, attachment_output_path, metadata_rules, config):
                     display_progress_bar(current_file, total_files, f"扫描: {file}")
 
                 debug(f"📄 Found Markdown file: {file}", LOG_LEVEL_DEBUG, config)
-                scan_markdown_file(file, root, directory, resource_dir, metadata_rules, config["stats"], tasks, config)
+                scan_markdown_file(file, root, directory, resource_dir, tasks, config)
 
     return tasks
 
@@ -876,7 +867,7 @@ def apply_action(key, value, action, config):
         key (str): 元数据键
         value (str): 元数据值
         action (dict): 要应用的操作
-        config (dict, optional): 配置字典
+        config (dict): 配置字典
 
     返回:
         tuple: (新键, 新值) 或 (None, None)（如果元数据应被删除）
@@ -916,20 +907,21 @@ def apply_action(key, value, action, config):
         debug(f"⚠️ Unsupported action type '{action_type}' for key '{key}'", LOG_LEVEL_ERROR, config)
         return key, value
 
-def transform_metadata(lines, metadata_rules, config):
+def transform_metadata(lines, config):
     """
     根据规则转换元数据行。
 
     参数:
         lines (list): 可能包含元数据的行列表
         metadata_rules (dict): 处理元数据的规则
-        config (dict, optional): 配置字典
+        config (dict): 配置字典
 
     返回:
         list: 转换后的行
     """
     debug("Starting metadata transformation...", LOG_LEVEL_DEBUG, config)
     transformed_lines = []
+    metadata_rules = config.get("metadata_rules", {})
     for line in lines:
         if line.strip().startswith('#'):
             continue
@@ -963,18 +955,17 @@ def transform_metadata(lines, metadata_rules, config):
 
     return transformed_lines
 
-def update_references_in_markdown(file, path_mapping, metadata_rules, config):
+def update_references_in_markdown(file, path_mapping, config):
     """
     更新 Markdown 文件中的引用并转换元数据。
 
     参数:
         file (str或Path): Markdown 文件的路径。
         path_mapping (dict): 当前文件的旧路径到新路径的映射。
-        metadata_rules (dict): 处理元数据的规则。
         config (dict, optional): 用于日志记录的配置。
     """
     try:
-        with open(file, "r") as f:
+        with open(file, "r", encoding="utf-8") as f:  # Added encoding
             content = f.readlines()
 
         debug(f"Updating references and metadata in: {file}", LOG_LEVEL_DEBUG, config)
@@ -991,28 +982,29 @@ def update_references_in_markdown(file, path_mapping, metadata_rules, config):
                     debug(f"Line {i}:\n   Original: {original_line.strip()}\n   Updated:  {line.strip()}", LOG_LEVEL_DEBUG, config)
             updated_content.append(line)
 
-        with open(file, "w") as f:
+        with open(file, "w", encoding="utf-8") as f:  # Added encoding
             f.writelines(updated_content)
 
         debug(f"更新文件 {file} 中的引用完成", LOG_LEVEL_ACTION, config)
     except Exception as e:
         debug(f"❌ Error updating references in {file}: {e}", LOG_LEVEL_ERROR, config)
 
-def map_metadata(file, metadata_rules, config):
+def map_metadata(file, config):
     """
     映射并转换 Markdown 文件中的元数据。
 
     参数:
         file (str 或 Path): Markdown 文件的路径
         metadata_rules (dict): 处理元数据的规则
-        config (dict, optional): 配置字典
+        config (dict): 配置字典
     """
+    metadata_rules = config.get("metadata_rules", {})
     try:
         rule_summary = {key: {"rules_found": len(value.get("actions", [])), 
                     "types": [a.get("type") for a in value.get("actions", [])]} 
                 for key, value in metadata_rules.items()}
         debug(f"📋 Metadata rules summary: {rule_summary}", LOG_LEVEL_DEBUG, config)
-        with open(file, "r") as f:
+        with open(file, "r", encoding="utf-8") as f:  # Added encoding
             content = f.readlines()
 
         metadata_end_index = 0
@@ -1032,7 +1024,7 @@ def map_metadata(file, metadata_rules, config):
 
         content = transformed_metadata + content[metadata_end_index:]
 
-        with open(file, "w") as f:
+        with open(file, "w", encoding="utf-8") as f:  # Added encoding
             f.writelines(content)
 
         debug(f"映射文件 {file} 的元数据完成", LOG_LEVEL_ACTION, config)
@@ -1116,7 +1108,7 @@ def load_and_configure(args):
 
     return config
 
-def print_statistics(stats, unmapped_metadata, tasks):
+def print_statistics(stats, tasks):
     """
     打印总结任务的统计信息。
 
@@ -1126,10 +1118,11 @@ def print_statistics(stats, unmapped_metadata, tasks):
         tasks (list): 扫描期间生成的任务列表
     """
     # 如果有进度条，确保在打印统计信息前完成进度条
+    unmapped_metadata = stats.get("unmapped_metadata", {})
     if hasattr(display_progress_bar, "last_line"):
         sys.stdout.write("\n")
         sys.stdout.flush()
-
+    
     # 统计预处理任务数量
     pre_task_count = sum(1 for task in tasks if task.get("is_pre_task", False))
 
@@ -1214,14 +1207,13 @@ def main():
 
         directory = args.directory
         attachment_output_path = config.get("attachment_output_path", "Resource")
-        metadata_rules = config.get("metadata_rules", {})
 
         if config.get("log_file"):
             debug(f"Starting obsidian_import.py on {directory}", LOG_LEVEL_ACTION, config)
 
         # Step 1: Scan the directory
         debug("🚀 Starting directory scan...", LOG_LEVEL_FLOW, config)
-        tasks = scan_directory(directory, attachment_output_path, metadata_rules, config)
+        tasks = scan_directory(directory, attachment_output_path, config)
 
         # Step 2: Confirm execution
         print_statistics(config["stats"], config["stats"]["unmapped_metadata"], tasks)
@@ -1235,8 +1227,9 @@ def main():
 
         # Step 4: Print final statistics
         stats = config["stats"]
-        unmapped_metadata = stats["unmapped_metadata"]
-        print_statistics(stats, unmapped_metadata, tasks)
+        print_statistics(stats, tasks)
+    except Exception as e:
+        debug(f"❌ Unexpected error: {e}", LOG_LEVEL_ERROR, None)
     finally:
         close_log_file(config)
 
