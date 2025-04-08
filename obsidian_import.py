@@ -467,7 +467,7 @@ def process_metadata_line(line: str, config: Dict[str, Any]) -> List[Dict[str, A
         if action.get("type") == "insert":
             tasks.append({
                 "type": TaskType.INSERT_CONTENT.value,
-                "position": action.get("at", "before"),  # Use 'at' parameter for position
+                "at": action.get("at", "before"),
                 "content": action.get("content", ""),
                 "key": key,
                 "file": config.get("current_file"),
@@ -637,7 +637,7 @@ def scan_markdown_file(file: str, root: str, directory: str, resource_dir: Path,
                 tasks.append({
                     "type": TaskType.INSERT_CONTENT.value,
                     "file": original_path,
-                    "position": rule.get("position", "before"), 
+                    "at": rule.get("at", "before"), 
                     "content": rule["content"],
                     "key": first_metadata_key if rule["position"] == "first" else last_metadata_key,
                     "is_pre_task": True,
@@ -650,7 +650,7 @@ def scan_markdown_file(file: str, root: str, directory: str, resource_dir: Path,
                 tasks.append({
                     "type": TaskType.DELETE_CONTENT.value,
                     "file": original_path,
-                    "position": rule.get("position", "before"),
+                    "at": rule.get("at", "before"),
                     "key": first_metadata_key if rule["position"] == "first" else last_metadata_key,
                     "when_value": rule.get("when_value"),
                     "when_regex": rule.get("when_regex"),
@@ -945,7 +945,10 @@ def execute_task(task: Dict[str, Any], config: Dict[str, Any]) -> None:
             map_metadata(task["file"], config, task.get("key", ""))
         elif task["type"] == TaskType.INSERT_CONTENT.value:
             debug(f"✏️ 插入内容: {task}", LOG_LEVEL_ACTION, config)
-            insert_content_in_file(task, config)
+            modify_content_in_file(task, config)
+        elif task["type"] == TaskType.DELETE_CONTENT.value:
+            debug(f"🗑️ 删除内容: {task}", LOG_LEVEL_ACTION, config)
+            modify_content_in_file(task, config)
         elif task["type"] == TaskType.CLEANUP_PATH.value:
             debug(f"🗑️ 清理目标: {task}", LOG_LEVEL_ACTION, config)
             dest_path = Path(task["dest"])  # 确保 dest 是 Path 对象
@@ -962,6 +965,10 @@ def execute_task(task: Dict[str, Any], config: Dict[str, Any]) -> None:
                         debug(f"✅ 非空目录已删除: {dest_path}", LOG_LEVEL_ACTION, config)
             else:
                 debug(f"⚠️ 清理目标不存在: {dest_path}", LOG_LEVEL_ERROR, config)
+        else:
+            debug(f"⚠️ Unsupported task type: {task['type']}", LOG_LEVEL_ERROR, config)
+            raise ValueError(f"Unsupported task type: {task['type']}")
+        
         task["status"] = "done"  # Mark task as done
         debug(f"✅ Task completed: {task['type']} (ID: {task['id']}, Status: {task['status']})", LOG_LEVEL_DEBUG, config)
     except Exception as e:
@@ -1069,7 +1076,7 @@ def apply_action(key: str, value: str, action: Dict[str, Any], config: Dict[str,
         debug(f"⚠️ Unsupported action type '{action_type}' for key '{key}'", LOG_LEVEL_ERROR, config)
         return key, value
 
-def insert_content_in_file(task: Dict[str, Any], config: Dict[str, Any]) -> None:
+def modify_content_in_file(task: Dict[str, Any], config: Dict[str, Any]) -> None:
     """
     在文件中插入或删除内容。
 
@@ -1078,8 +1085,8 @@ def insert_content_in_file(task: Dict[str, Any], config: Dict[str, Any]) -> None
         config (dict): 配置字典
     """
     file_path = task["file"]
-    action_type = task["type"]
-    position = task.get("position", "before")
+    task_type = task["type"]
+    at = task.get("at", "before")
     content = task.get("content", "")
     key = task.get("key", None)
     when_value = task.get("when_value", None)
@@ -1092,51 +1099,53 @@ def insert_content_in_file(task: Dict[str, Any], config: Dict[str, Any]) -> None
     with file_handle:
         lines = file_handle.readlines()
 
-    updated_lines = []
-    key_found = False
-
+    # Step 0: 复制 lines 到 updated_lines，并定位 key 的下标
+    updated_lines = lines[:]
+    key_index = -1
     for i, line in enumerate(lines):
-        # 检查是否匹配 key
         if key and line.startswith(f"{key}:"):
-            key_found = True
+            key_index = i
+            break
 
-            # 处理插入操作
-            if action_type == "insert":
-                if position == "before":
-                    updated_lines.append(content + "\n")
-                updated_lines.append(line)
-                if position == "after":
-                    updated_lines.append(content + "\n")
-                continue
-
-            # 处理删除操作
-            if action_type == "delete":
-                if position == "before":
-                    # 删除 key 之前的内容
-                    for j in range(i):
-                        if (when_value and lines[j] == when_value) or \
-                           (when_regex and re.match(when_regex, lines[j])):
-                            debug(f"🗑️ Deleting line before key '{key}': {lines[j].strip()}", LOG_LEVEL_ACTION, config)
-                        else:
-                            updated_lines.append(lines[j])
-                elif position == "after":
-                    # 删除 key 之后的内容
-                    updated_lines.append(line)  # 保留当前 key 行
-                    for j in range(i + 1, len(lines)):
-                        if (when_value and lines[j].strip() == when_value) or \
-                           (when_regex and re.match(when_regex, lines[j])):
-                            debug(f"🗑️ Deleting line after key '{key}': {lines[j]}", LOG_LEVEL_ACTION, config)
-                        else:
-                            updated_lines.append(lines[j])
-                    break  # 处理完后续内容，退出循环
-                continue
-
-        updated_lines.append(line)
-
-    # 如果未找到 key，直接返回
-    if key and not key_found:
+    if key_index == -1:
         debug(f"⚠️ Key '{key}' not found in file: {file_path}", LOG_LEVEL_DEBUG, config)
         return
+
+    # Step 1: 插入操作
+    if task_type == TaskType.INSERT_CONTENT.value:
+        if at == "before":
+            updated_lines.insert(key_index, content + "\n")
+            debug(f"✏️ Inserted content before key '{key}': {content}", LOG_LEVEL_ACTION, config)
+        elif at == "after":
+            updated_lines.insert(key_index + 1, content + "\n")
+            debug(f"✏️ Inserted content after key '{key}': {content}", LOG_LEVEL_ACTION, config)
+
+    # Step 2: 删除操作
+    elif task_type == TaskType.DELETE_CONTENT.value:
+        # 删除 after：从 key_index 向后遍历
+        if at == "after":
+            for i in range(key_index + 1, len(updated_lines)):
+                line_not_none = updated_lines[i] is not None
+                value_matched = when_value and (updated_lines[i] == when_value)
+                regex_matched = when_regex and (re.match(when_regex, updated_lines[i]))
+                
+                if line_not_none and (value_matched or regex_matched):
+                    debug(f"🗑️ Deleting line after key '{key}': {updated_lines[i]}", LOG_LEVEL_ACTION, config)
+                    updated_lines[i] = None
+
+        # 删除 before：从 key_index 向前遍历
+        elif at == "before":
+            for i in range(key_index - 1, -1, -1):
+                line_not_none = updated_lines[i] is not None
+                value_matched = when_value and (updated_lines[i] == when_value)
+                regex_matched = when_regex and (re.match(when_regex, updated_lines[i]))
+                
+                if line_not_none and (value_matched or regex_matched):
+                    debug(f"🗑️ Deleting line before key '{key}': {updated_lines[i]}", LOG_LEVEL_ACTION, config)
+                    updated_lines[i] = None
+
+        # 移除所有标记为 None 的行
+        updated_lines = [line for line in updated_lines if line is not None]
 
     # 写回文件
     file_handle = safe_open_file(file_path, "w")
@@ -1396,13 +1405,13 @@ def print_statistics(config: Dict[str, Any], tasks: List[Dict[str, Any]]) -> Non
         insert_content_tasks = [t for t in pre_tasks if t.get('type') == TaskType.INSERT_CONTENT.value]
         if insert_content_tasks:
             prefix = "   ├─" if other_pre_tasks else "   └─"
-            print(f"{prefix} ✏️ INSERT_CONTENT              : {len(insert_content_tasks)} tasks")
+            print(f"{prefix} ✏️  INSERT_CONTENT              : {len(insert_content_tasks)} tasks")
             
         # Count DELETE_CONTENT tasks
         delete_content_tasks = [t for t in pre_tasks if t.get('type') == TaskType.DELETE_CONTENT.value]
         if delete_content_tasks:
             prefix = "   ├─" if other_pre_tasks else "   └─"
-            print(f"{prefix} 🗑️ DELETE_CONTENT              : {len(delete_content_tasks)} tasks")
+            print(f"{prefix} 🗑️  DELETE_CONTENT              : {len(delete_content_tasks)} tasks")
 
         # Display other preprocessing tasks individually
         for i, task in enumerate(other_pre_tasks):
