@@ -106,7 +106,10 @@ class TaskType(Enum):
     UPDATE_ATTACH_REF = "UPDATE_ATTACH_REF"
     TRANSFORM_METADATA = "TRANSFORM_METADATA"
     MAP_METADATA = "MAP_METADATA"
-    CLEANUP = "CLEANUP"
+    CLEANUP_PATH = "CLEANUP"
+    DELETE_CONTENT = "DELETE_CONTENT"
+    INSERT_CONTENT = "INSERT_CONTENT"
+    
 
 # 定义日志级别
 LOG_LEVELS = {
@@ -463,7 +466,7 @@ def process_metadata_line(line: str, config: Dict[str, Any]) -> List[Dict[str, A
     for action in actions:
         if action.get("type") == "insert":
             tasks.append({
-                "type": "INSERT_CONTENT",
+                "type": TaskType.INSERT_CONTENT.value,
                 "position": action.get("at", "before"),  # Use 'at' parameter for position
                 "content": action.get("content", ""),
                 "key": key,
@@ -629,31 +632,33 @@ def scan_markdown_file(file: str, root: str, directory: str, resource_dir: Path,
         # 根据 config 插入元数据分隔符任务
         metadata_section_rules = config.get("metadata_section_rules", [])
         for rule in metadata_section_rules:
-            if rule["type"] == "insert" and rule["position"] == "first":
+            
+            if rule["type"] == "insert":
                 tasks.append({
-                    "type": "INSERT_CONTENT",
+                    "type": TaskType.INSERT_CONTENT.value,
                     "file": original_path,
-                    "position": "before",
+                    "position": rule.get("position", "before"), 
                     "content": rule["content"],
-                    "key": first_metadata_key,
+                    "key": first_metadata_key if rule["position"] == "first" else last_metadata_key,
                     "is_pre_task": True,
                     "status": "todo",
                     "id": generate_task_id()
                 })
-                debug(f"➕ Added metadata section start task for {original_path}", LOG_LEVEL_ACTION, config)
+                debug(f"➕ Added metadata insert task {tasks[-1]}", LOG_LEVEL_ACTION, config)
 
-            if rule["type"] == "insert" and rule["position"] == "last":
+            if rule["type"] == "delete":
                 tasks.append({
-                    "type": "INSERT_CONTENT",
+                    "type": TaskType.DELETE_CONTENT.value,
                     "file": original_path,
-                    "position": "after",
-                    "content": rule["content"],
-                    "key": last_metadata_key,
+                    "position": rule.get("position", "before"),
+                    "key": first_metadata_key if rule["position"] == "first" else last_metadata_key,
+                    "when_value": rule.get("when_value"),
+                    "when_regex": rule.get("when_regex"),
                     "is_pre_task": True,
                     "status": "todo",
                     "id": generate_task_id()
                 })
-                debug(f"➕ Added metadata section end task for {original_path}", LOG_LEVEL_ACTION, config)
+                debug(f"➕ Added metadata delete task for {tasks[-1]}", LOG_LEVEL_ACTION, config)
 
         # 添加元数据任务
         tasks.extend(metadata_tasks)
@@ -809,7 +814,7 @@ def scan_attachments(original_path: Path, directory: str, resource_dir: Path, ta
         attachment_files = list(attachment_dir.iterdir())
         if moved_files_count == len(attachment_files):
             cleanup_task = {
-                "type": TaskType.CLEANUP.value,
+                "type": TaskType.CLEANUP_PATH.value,
                 "dest": attachment_dir,
                 "id": generate_task_id()  # Add unique task ID
             }
@@ -938,10 +943,10 @@ def execute_task(task: Dict[str, Any], config: Dict[str, Any]) -> None:
         elif task["type"] == TaskType.TRANSFORM_METADATA.value:
             debug(f"🛠️ 转换文件中的元数据: {task}", LOG_LEVEL_ACTION, config)
             map_metadata(task["file"], config, task.get("key", ""))
-        elif task["type"] == "INSERT_CONTENT":
+        elif task["type"] == TaskType.INSERT_CONTENT.value:
             debug(f"✏️ 插入内容: {task}", LOG_LEVEL_ACTION, config)
             insert_content_in_file(task, config)
-        elif task["type"] == TaskType.CLEANUP.value:
+        elif task["type"] == TaskType.CLEANUP_PATH.value:
             debug(f"🗑️ 清理目标: {task}", LOG_LEVEL_ACTION, config)
             dest_path = Path(task["dest"])  # 确保 dest 是 Path 对象
             if dest_path.exists():
@@ -1016,42 +1021,6 @@ def execute_tasks(tasks: List[Dict[str, Any]], config: Dict[str, Any]) -> None:
 # Functions in this section handle metadata transformation.
 # These include `apply_action`, `transform_metadata`, `update_references_in_markdown`, and `map_metadata`.
 
-def insert_content_in_file(task: Dict[str, Any], config: Dict[str, Any]) -> None:
-    """
-    在文件中插入内容。
-
-    参数:
-        task (dict): 包含插入内容的任务
-        config (dict): 配置字典
-    """
-    file_path = task["file"]
-    position = task["position"]
-    content = task["content"]
-    key = task["key"]
-
-    file_handle = safe_open_file(file_path, "r")
-    if not file_handle:
-        return
-
-    with file_handle:
-        lines = file_handle.readlines()
-
-    updated_lines = []
-    for line in lines:
-        if position == "before" and line.startswith(f"{key}:"):
-            updated_lines.append(content + "\n")
-        updated_lines.append(line)
-        if position == "after" and line.startswith(f"{key}:"):
-            updated_lines.append(content + "\n")
-
-    file_handle = safe_open_file(file_path, "w")
-    if file_handle:
-        with file_handle:
-            file_handle.writelines(updated_lines)
-
-    task["status"] = "done"  # Mark task as done
-    debug(f"✅ 插入内容完成: {task}", LOG_LEVEL_ACTION, config)
-
 def apply_action(key: str, value: str, action: Dict[str, Any], config: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
     """
     对键值对应用元数据转换操作。
@@ -1065,6 +1034,7 @@ def apply_action(key: str, value: str, action: Dict[str, Any], config: Dict[str,
     返回:
         tuple: (新键, 新值) 或 (None, None)（如果元数据应被删除）
     """
+    debug(f"🔧 Applying action '{action.get('type')}' on key '{key}' with value '{value}'", LOG_LEVEL_DEBUG, config)
     action_type = action.get("type")
     if action_type == "delete":
         debug(f"🗑️ Deleting metadata key: {key}", LOG_LEVEL_ACTION, config)
@@ -1080,24 +1050,101 @@ def apply_action(key: str, value: str, action: Dict[str, Any], config: Dict[str,
 
         # Apply direct value mapping
         if new_value in value_mapping:
-            debug(f"🔄 Mapping value '{new_value}' 🏁 '{value_mapping[new_value]}'", LOG_LEVEL_ACTION, config)
+            debug(f"🔄 Mapping value '{new_value}' to '{value_mapping[new_value]}'", LOG_LEVEL_ACTION, config)
             new_value = value_mapping[new_value]
 
         # Apply regex-based transformations
         for regex, replacement in regex_mapping:
             if re.search(regex, new_value):
-                debug(f"🔍 Regex '{regex}' matched. \n⭕️'{new_value}' 🏁'{replacement}'", LOG_LEVEL_ACTION, config)
+                debug(f"🔍 Regex '{regex}' matched. Replacing '{new_value}' with '{replacement}'", LOG_LEVEL_ACTION, config)
                 new_value = re.sub(regex, replacement, new_value)
                 break
 
         return key, new_value
     elif action_type == "append_after":
         content = action.get("content", "")
-        debug(f"⬅️ Appending '{content}' to value '{value.strip()}'", LOG_LEVEL_ACTION, config)
+        debug(f"➕ Appending '{content}' to value '{value.strip()}'", LOG_LEVEL_ACTION, config)
         return key, f"{value.strip()}{content}"
     else:
         debug(f"⚠️ Unsupported action type '{action_type}' for key '{key}'", LOG_LEVEL_ERROR, config)
         return key, value
+
+def insert_content_in_file(task: Dict[str, Any], config: Dict[str, Any]) -> None:
+    """
+    在文件中插入或删除内容。
+
+    参数:
+        task (dict): 包含插入或删除内容的任务
+        config (dict): 配置字典
+    """
+    file_path = task["file"]
+    action_type = task["type"]
+    position = task.get("position", "before")
+    content = task.get("content", "")
+    key = task.get("key", None)
+    when_value = task.get("when_value", None)
+    when_regex = task.get("when_regex", None)
+
+    file_handle = safe_open_file(file_path, "r")
+    if not file_handle:
+        return
+
+    with file_handle:
+        lines = file_handle.readlines()
+
+    updated_lines = []
+    key_found = False
+
+    for i, line in enumerate(lines):
+        # 检查是否匹配 key
+        if key and line.startswith(f"{key}:"):
+            key_found = True
+
+            # 处理插入操作
+            if action_type == "insert":
+                if position == "before":
+                    updated_lines.append(content + "\n")
+                updated_lines.append(line)
+                if position == "after":
+                    updated_lines.append(content + "\n")
+                continue
+
+            # 处理删除操作
+            if action_type == "delete":
+                if position == "before":
+                    # 删除 key 之前的内容
+                    for j in range(i):
+                        if (when_value and lines[j] == when_value) or \
+                           (when_regex and re.match(when_regex, lines[j])):
+                            debug(f"🗑️ Deleting line before key '{key}': {lines[j].strip()}", LOG_LEVEL_ACTION, config)
+                        else:
+                            updated_lines.append(lines[j])
+                elif position == "after":
+                    # 删除 key 之后的内容
+                    updated_lines.append(line)  # 保留当前 key 行
+                    for j in range(i + 1, len(lines)):
+                        if (when_value and lines[j].strip() == when_value) or \
+                           (when_regex and re.match(when_regex, lines[j])):
+                            debug(f"🗑️ Deleting line after key '{key}': {lines[j]}", LOG_LEVEL_ACTION, config)
+                        else:
+                            updated_lines.append(lines[j])
+                    break  # 处理完后续内容，退出循环
+                continue
+
+        updated_lines.append(line)
+
+    # 如果未找到 key，直接返回
+    if key and not key_found:
+        debug(f"⚠️ Key '{key}' not found in file: {file_path}", LOG_LEVEL_DEBUG, config)
+        return
+
+    # 写回文件
+    file_handle = safe_open_file(file_path, "w")
+    if file_handle:
+        with file_handle:
+            file_handle.writelines(updated_lines)
+
+    debug(f"✅ 插入或删除内容完成: {task}", LOG_LEVEL_ACTION, config)
 
 def update_references_in_markdown(file: Union[str, Path], path_mapping: Dict[str, str], config: Dict[str, Any]) -> None:
     """
@@ -1342,15 +1389,21 @@ def print_statistics(config: Dict[str, Any], tasks: List[Dict[str, Any]]) -> Non
     # Only print preprocessing tasks when they exist
     if pre_tasks:
         print("└─ 🔄 Preprocessing Tasks")
-        # Count INSERT_CONTENT tasks
-        insert_content_tasks = [t for t in pre_tasks if t.get('type') == "INSERT_CONTENT"]
-        other_pre_tasks = [t for t in pre_tasks if t.get('type') != "INSERT_CONTENT"]
-        
-        # Display count of INSERT_CONTENT tasks if there are any
+
+        other_pre_tasks = [t for t in pre_tasks if t.get('type') not in [TaskType.INSERT_CONTENT.value, TaskType.DELETE_CONTENT.value]]
+
+        # Display count of INSERT_CONTENT and DELETE_CONTENT tasks if there are any
+        insert_content_tasks = [t for t in pre_tasks if t.get('type') == TaskType.INSERT_CONTENT.value]
         if insert_content_tasks:
             prefix = "   ├─" if other_pre_tasks else "   └─"
             print(f"{prefix} ✏️ INSERT_CONTENT              : {len(insert_content_tasks)} tasks")
-        
+            
+        # Count DELETE_CONTENT tasks
+        delete_content_tasks = [t for t in pre_tasks if t.get('type') == TaskType.DELETE_CONTENT.value]
+        if delete_content_tasks:
+            prefix = "   ├─" if other_pre_tasks else "   └─"
+            print(f"{prefix} 🗑️ DELETE_CONTENT              : {len(delete_content_tasks)} tasks")
+
         # Display other preprocessing tasks individually
         for i, task in enumerate(other_pre_tasks):
             is_last = i == len(other_pre_tasks) - 1
@@ -1374,7 +1427,7 @@ def print_statistics(config: Dict[str, Any], tasks: List[Dict[str, Any]]) -> Non
 
     # If there are unmapped metadata entries, add a branch in the tree
     if unmapped_metadata:
-        print("\n⚠️  Unmapped Metadata")
+        print("\n⚠️ Unmapped Metadata")
         metadata_keys = list(unmapped_metadata.keys())
         
         for i, key in enumerate(metadata_keys):
