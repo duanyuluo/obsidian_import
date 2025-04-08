@@ -350,7 +350,7 @@ def load_config(config_path: str) -> Dict[str, Any]:
 #############################################################
 
 # Functions in this section handle metadata validation and task generation.
-# These include `validate_metadata_mappings`, `read_metadata_lines`,
+# These include `validate_metadata_mappings`, `seek_metadata_region`,
 # `process_metadata_line`, `apply_metadata_actions`, and `generate_metadata_tasks`.
 
 def validate_metadata_mappings(lines: List[str], config: Dict[str, Any]) -> None:
@@ -381,57 +381,43 @@ def validate_metadata_mappings(lines: List[str], config: Dict[str, Any]) -> None
                     unmapped_metadata.setdefault(key, set()).add(value.strip())
     debug(f"验证元数据映射完成: {unmapped_metadata}", LOG_LEVEL_DEBUG, config)
 
-def read_metadata_lines(md_file: Union[str, Path], config: Dict[str, Any]) -> List[str]:
+def seek_metadata_region(lines: List[str], config: Dict[str, Any]) -> Tuple[int, int]:
     """
-    从 Markdown 文件中提取元数据行。
+    从 Markdown 文件的行列表中提取元数据区域的起始和结束行号。
 
     参数:
-        md_file (str 或 Path): Markdown 文件的路径
+        lines (list): Markdown 文件的行列表
         config (dict): 配置字典，包含元数据规则
+
+    返回:
+        tuple: (元数据起始行号, 元数据结束行号)，如果未找到元数据，则返回 (-1, -1)
     """
     metadata_rules = config.get("metadata_rules", {})
-    with open(md_file, "r", encoding="utf-8") as f:
-        content = f.readlines()
+    debug("🔍 Searching for metadata region...", LOG_LEVEL_DEBUG, config)
 
-    debug(f"Reading metadata lines from {md_file}", LOG_LEVEL_DEBUG, config)
-
-    # Step 1: Read the first 10 lines
-    first_10_lines = content[:10]
-
-    # Step 2: Check for a match in metadata_rules
+    # Step 1: 找到元数据的起始位置
     metadata_start = -1
-    for i, line in enumerate(first_10_lines):
-        if line.strip().startswith("#"):  # Skip comment lines
+    metadata_end = -1
+    for i, line in enumerate(lines):
+        # 如果超过前十行还没找到元数据，停止搜索
+        if i >= 10 and metadata_start == -1:
+            break
+            
+        if line.strip().startswith("#"):  # 跳过注释行
             continue
+
         key, sep, _ = line.partition(": ")
         if sep and key.strip() in metadata_rules:
-            metadata_start = i
-            break
+            if metadata_start == -1:
+                metadata_start = i  # 第一个元数据行的位置
+            metadata_end = i  # 不断更新为最后一个元数据行的位置
 
-    if metadata_start == -1:
-        debug(f"No metadata match found in the first 10 lines of {md_file}", LOG_LEVEL_DEBUG, config)
-        return []
+    if metadata_start == -1 or metadata_end == -1:
+        debug("⚠️ No metadata found in the provided lines.", LOG_LEVEL_DEBUG, config)
+        return -1, -1
 
-    # Step 3: Expand the metadata region
-    metadata_lines = []
-    # Search backward
-    for i in range(metadata_start, -1, -1):
-        line = content[i].strip()
-        if not line or line == "---":  # Stop at empty or "---" lines
-            break
-        if ": " in line:  # Include lines with "key: value" format
-            metadata_lines.insert(0, line)
-
-    # Search forward
-    for i in range(metadata_start + 1, len(content)):
-        line = content[i].strip()
-        if not line or line == "---":  # Stop at empty or "---" lines
-            break
-        if ": " in line:  # Include lines with "key: value" format
-            metadata_lines.append(line)
-
-    debug(f"从 {md_file} 提取的元数据行: {metadata_lines}", LOG_LEVEL_DEBUG, config)
-    return metadata_lines
+    debug(f"✅ Metadata region found: start={metadata_start}, end={metadata_end}", LOG_LEVEL_DEBUG, config)
+    return metadata_start, metadata_end
 
 def process_metadata_line(line: str, config: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
@@ -569,11 +555,21 @@ def generate_metadata_tasks(md_file: Union[str, Path], config: Dict[str, Any]) -
         list: 转换任务列表
     """
     tasks = []
-    metadata_lines = read_metadata_lines(md_file, config)
+    file_handle = safe_open_file(md_file, "r")
+    if not file_handle:
+        return tasks
+
+    with file_handle:
+        lines = file_handle.readlines()
+
+    metadata_start, metadata_end = seek_metadata_region(lines, config)
+    if metadata_start == -1 or metadata_end == -1:
+        return []
+
+    metadata_lines = lines[metadata_start:metadata_end + 1]
+    tasks = []
     for line in metadata_lines:
         tasks.extend(process_metadata_line(line, config))
-    for task in tasks:
-        task["status"] = "todo"  # Initialize task status as "todo"
     return tasks
 
 #############################################################
@@ -754,13 +750,11 @@ def scan_attachments(original_path: Path, directory: str, resource_dir: Path, ta
         ref_path_type = probe_path(ref_path, config)
         if ref_path_type in ["not_exist", "error"]:
             debug(f"Attachment not found: {ref}", LOG_LEVEL_ERROR, config)
-            config["stats"]["errors"] += 1
             continue
 
         if ref_path.is_file():
             if ref_path.suffix.lower() not in supported_extensions:
                 debug(f"Unsupported attachment extension: {ref_path.suffix} in file {ref_path}", LOG_LEVEL_ERROR, config)
-                config["stats"]["errors"] += 1  # Increment error count
                 continue     
 
             if attachment_dir and ref_path.parent == attachment_dir:
@@ -943,7 +937,7 @@ def execute_task(task: Dict[str, Any], config: Dict[str, Any]) -> None:
             update_references_in_markdown(task["file"], path_mapping, config)
         elif task["type"] == TaskType.TRANSFORM_METADATA.value:
             debug(f"🛠️ 转换文件中的元数据: {task}", LOG_LEVEL_ACTION, config)
-            map_metadata(task["file"], config)
+            map_metadata(task["file"], config, task.get("key", ""))
         elif task["type"] == "INSERT_CONTENT":
             debug(f"✏️ 插入内容: {task}", LOG_LEVEL_ACTION, config)
             insert_content_in_file(task, config)
@@ -1071,7 +1065,6 @@ def apply_action(key: str, value: str, action: Dict[str, Any], config: Dict[str,
     返回:
         tuple: (新键, 新值) 或 (None, None)（如果元数据应被删除）
     """
-    debug(f"🔧 Applying action '{action.get('type')}' on key '{key}' with value '{value}'", LOG_LEVEL_DEBUG, config)
     action_type = action.get("type")
     if action_type == "delete":
         debug(f"🗑️ Deleting metadata key: {key}", LOG_LEVEL_ACTION, config)
@@ -1087,72 +1080,24 @@ def apply_action(key: str, value: str, action: Dict[str, Any], config: Dict[str,
 
         # Apply direct value mapping
         if new_value in value_mapping:
-            debug(f"🔄 Mapping value '{new_value}' to '{value_mapping[new_value]}'", LOG_LEVEL_ACTION, config)
+            debug(f"🔄 Mapping value '{new_value}' 🏁 '{value_mapping[new_value]}'", LOG_LEVEL_ACTION, config)
             new_value = value_mapping[new_value]
 
         # Apply regex-based transformations
         for regex, replacement in regex_mapping:
             if re.search(regex, new_value):
-                debug(f"🔍 Regex '{regex}' matched. Replacing '{new_value}' with '{replacement}'", LOG_LEVEL_ACTION, config)
+                debug(f"🔍 Regex '{regex}' matched. \n⭕️'{new_value}' 🏁'{replacement}'", LOG_LEVEL_ACTION, config)
                 new_value = re.sub(regex, replacement, new_value)
                 break
 
         return key, new_value
     elif action_type == "append_after":
         content = action.get("content", "")
-        debug(f"➕ Appending '{content}' to value '{value.strip()}'", LOG_LEVEL_ACTION, config)
+        debug(f"⬅️ Appending '{content}' to value '{value.strip()}'", LOG_LEVEL_ACTION, config)
         return key, f"{value.strip()}{content}"
     else:
         debug(f"⚠️ Unsupported action type '{action_type}' for key '{key}'", LOG_LEVEL_ERROR, config)
         return key, value
-
-def transform_metadata(lines: List[str], config: Dict[str, Any]) -> List[str]:
-    """
-    根据规则转换元数据行。
-
-    参数:
-        lines (list): 可能包含元数据的行列表
-        metadata_rules (dict): 处理元数据的规则
-        config (dict): 配置字典
-
-    返回:
-        list: 转换后的行
-    """
-    debug("Starting metadata transformation...", LOG_LEVEL_DEBUG, config)
-    transformed_lines = []
-    metadata_rules = config.get("metadata_rules", {})
-    for line in lines:
-        if line.strip().startswith('#'):
-            continue
-        key, sep, value = line.partition(": ")
-        if not sep:  # Skip lines that are not metadata
-            transformed_lines.append(line)
-            continue
-
-        debug(f"🔍 Processing metadata: {key}: {value.strip()}", LOG_LEVEL_DEBUG, config)
-        rule = metadata_rules.get(key)
-        if not rule:  # No rule, retain the line
-            debug(f"⚠️ No rule found for key: {key}", LOG_LEVEL_ERROR, config)
-            transformed_lines.append(line)
-            continue
-
-        actions = rule.get("actions", [])
-        debug(f"🔧 Found {len(actions)} actions for key: {key}", LOG_LEVEL_DEBUG, config)
-
-        current_key, current_value = key, value.strip()
-        for i, action in enumerate(actions):
-            debug(f"🔧 Applying action {i + 1}: {action.get('type')}", LOG_LEVEL_DEBUG, config)
-            current_key, current_value = apply_action(current_key, current_value, action, config)
-            if current_key is None:  # If deleted, stop processing further actions
-                debug(f"🗑️ Key deleted: {key}", LOG_LEVEL_ACTION, config)
-                break
-
-        if current_key is not None:  # If not deleted, add the transformed metadata
-            transformed_line = f"{current_key}: {current_value}"
-            debug(f"✅ Transformed: {transformed_line}", LOG_LEVEL_ACTION, config)
-            transformed_lines.append(transformed_line)
-
-    return transformed_lines
 
 def update_references_in_markdown(file: Union[str, Path], path_mapping: Dict[str, str], config: Dict[str, Any]) -> None:
     """
@@ -1180,7 +1125,7 @@ def update_references_in_markdown(file: Union[str, Path], path_mapping: Dict[str
             if old_path in line:
                 encoded_new_path = quote(new_path)
                 line = line.replace(old_path, encoded_new_path)
-                debug(f"Line {i}:\n   Original: {original_line.strip()}\n   Updated:  {line.strip()}", LOG_LEVEL_DEBUG, config)
+                debug(f"\n⭕️ {original_line.strip()}\n🏁 {line.strip()}", LOG_LEVEL_DEBUG, config)
         updated_content.append(line)
 
     file_handle = safe_open_file(file, "w")
@@ -1190,44 +1135,74 @@ def update_references_in_markdown(file: Union[str, Path], path_mapping: Dict[str
 
     debug(f"更新文件引用完成 {file}", LOG_LEVEL_ACTION, config)
 
-def map_metadata(file: Union[str, Path], config: Dict[str, Any]) -> None:
+def map_metadata(file: Union[str, Path], config: Dict[str, Any], key: str) -> None:
     """
-    映射并转换 Markdown 文件中的元数据。
+    映射并转换 Markdown 文件中的单个元数据。
 
     参数:
         file (str 或 Path): Markdown 文件的路径
         config (dict): 配置字典
+        key (str): 要处理的元数据键
     """
-    metadata_rules = config.get("metadata_rules", {})
     file_handle = safe_open_file(file, "r")
     if not file_handle:
         return
 
     with file_handle:
-        content = file_handle.readlines()
+        lines = file_handle.readlines()
 
-    metadata_end_index = 0
-    for i, line in enumerate(content):
-        if line.strip() == "":  # Assume metadata ends at the first blank line
-            metadata_end_index = i
+    metadata_start, metadata_end = seek_metadata_region(lines, config)
+    if metadata_start == -1 or metadata_end == -1:
+        debug(f"⚠️ No metadata found in {file}", LOG_LEVEL_DEBUG, config)
+        return
+
+    # 提取元数据行
+    metadata_lines = lines[metadata_start:metadata_end + 1]
+    target_metadata_lines = [line for line in metadata_lines if line.startswith(f"{key}:")]
+
+    if not target_metadata_lines:
+        debug(f"⚠️ Key '{key}' not found in metadata of {file}", LOG_LEVEL_DEBUG, config)
+        return
+
+    debug(f"⭕️ Original metadata line: {''.join(target_metadata_lines)}", LOG_LEVEL_DEBUG, config)
+
+    # 获取规则并处理元数据
+    metadata_rules = config.get("metadata_rules", {})
+    rule = metadata_rules.get(key)
+    if not rule:
+        debug(f"⚠️ No rule found for key: {key}", LOG_LEVEL_ERROR, config)
+        return
+
+    actions = rule.get("actions", [])
+    debug(f"🔧 Found {len(actions)} actions for key: {key}", LOG_LEVEL_DEBUG, config)
+
+    current_key, current_value = key, target_metadata_lines[0].partition(": ")[2].strip()
+    for i, action in enumerate(actions):
+        debug(f"🔧 Applying action {i + 1}: {action.get('type')}", LOG_LEVEL_DEBUG, config)
+        current_key, current_value = apply_action(current_key, current_value, action, config)
+        if current_key is None:  # If deleted, stop processing further actions
+            debug(f"🗑️ Key deleted: {key}", LOG_LEVEL_ACTION, config)
             break
 
-    metadata_lines = content[:metadata_end_index]
-    transformed_metadata = transform_metadata(metadata_lines, config)
+    # 替换目标元数据行
+    updated_lines = []
+    for line in lines:
+        if line.startswith(f"{key}:"):
+            if current_key is not None:
+                updated_lines.append(f"{current_key}: {current_value}\n")
+            continue
+        updated_lines.append(line)
 
-    debug(f"Metadata changes for {file}:", LOG_LEVEL_DEBUG, config)
-    for original, transformed in zip(metadata_lines, transformed_metadata):
-        if original.strip() != transformed.strip():
-            debug(f"   Original: {original.strip()}\n   Transformed: {transformed.strip()}", LOG_LEVEL_DEBUG, config)
-
-    content = transformed_metadata + content[metadata_end_index:]
-
+    # 写回文件
     file_handle = safe_open_file(file, "w")
     if file_handle:
         with file_handle:
-            file_handle.writelines(content)
+            file_handle.writelines(updated_lines)
 
-    debug(f"映射文件 {file} 的元数据完成", LOG_LEVEL_ACTION, config)
+    if current_key is not None:
+        debug(f"✅ Updated metadata line: {current_key}: {current_value}", LOG_LEVEL_ACTION, config)
+    else:
+        debug(f"✅ Metadata key '{key}' has been deleted.", LOG_LEVEL_ACTION, config)
 
 #############################################################
 # MAIN FUNCTION
@@ -1327,13 +1302,13 @@ def print_statistics(config: Dict[str, Any], tasks: List[Dict[str, Any]]) -> Non
 
     print("\n📊 Import Statistics")
     print("├─ 📝 Summary")
-    print(f"│  ├─ Processed Markdown files    : {stats.get('markdown_files', 0)}")
-    print(f"│  ├─ Processed attachments       : {stats.get('attachments', 0)}")
-    print(f"│  ├─ Metadata conversion tasks   : {stats.get('metadata_tasks', 0)}")
-    print(f"│  ├─ Preprocessing tasks         : {len(pre_tasks)}")
-    print(f"│  ├─ Unmapped metadata entries   : {len(unmapped_metadata)}")
-    print(f"│  ├─ Scanning phase errors       : {stats.get('errors', 0)}")
-    print(f"│  └─ Total tasks generated       : {len(tasks)}")
+    print(f"│  ├─ 📄 Processed Markdown files    : {stats.get('markdown_files', 0)}")
+    print(f"│  ├─ 🖼️ Processed attachments       : {stats.get('attachments', 0)}")
+    print(f"│  ├─ 🏷️ Metadata conversion tasks   : {stats.get('metadata_tasks', 0)}")
+    print(f"│  ├─ 🔄 Preprocessing tasks         : {len(pre_tasks)}")
+    print(f"│  ├─ ❓ Unmapped metadata entries   : {len(unmapped_metadata)}")
+    print(f"│  ├─ ⚠️ Importer errors             : {stats.get('errors', 0)}")
+    print(f"│  └─ 🔢 Total tasks generated       : {len(tasks)}")
 
     print("├─ 🔍 Details")
     task_counts = {}
@@ -1346,7 +1321,23 @@ def print_statistics(config: Dict[str, Any], tasks: List[Dict[str, Any]]) -> Non
     task_types = list(task_counts.keys())
     for i, task_type in enumerate(task_types):
         prefix = "│  └─" if i == len(task_types) - 1 else "│  ├─"
-        print(f"{prefix} {task_type:28}: {task_counts[task_type]} tasks")
+        # Add emoji based on task type
+        emoji = "✏️"  # Default emoji
+        if "RENAME" in task_type:
+            emoji = "📝"
+        elif "MOVE" in task_type:
+            emoji = "🚚"
+        elif "COPY" in task_type:
+            emoji = "📋"
+        elif "UPDATE" in task_type:
+            emoji = "🔄"
+        elif "TRANSFORM" in task_type:
+            emoji = "🔧"
+        elif "MAP" in task_type:
+            emoji = "🗺️"
+        elif "CLEANUP" in task_type:
+            emoji = "🧹"
+        print(f"{prefix} {emoji} {task_type:26}: {task_counts[task_type]} tasks")
 
     # Only print preprocessing tasks when they exist
     if pre_tasks:
@@ -1358,7 +1349,7 @@ def print_statistics(config: Dict[str, Any], tasks: List[Dict[str, Any]]) -> Non
         # Display count of INSERT_CONTENT tasks if there are any
         if insert_content_tasks:
             prefix = "   ├─" if other_pre_tasks else "   └─"
-            print(f"{prefix} INSERT_CONTENT              : {len(insert_content_tasks)} tasks")
+            print(f"{prefix} ✏️ INSERT_CONTENT              : {len(insert_content_tasks)} tasks")
         
         # Display other preprocessing tasks individually
         for i, task in enumerate(other_pre_tasks):
@@ -1367,10 +1358,19 @@ def print_statistics(config: Dict[str, Any], tasks: List[Dict[str, Any]]) -> Non
             task_src = task.get('src', task.get('file', 'N/A'))
             if isinstance(task_src, Path):
                 task_src = task_src.name
-            print(f"{prefix} {task['type']:28}: {task_src}")
+                
+            # Add emoji based on task type
+            emoji = "✏️"  # Default emoji
+            task_type = task.get('type', '')
+            if "COPY" in task_type:
+                emoji = "📋"
+            elif "MOVE" in task_type:
+                emoji = "🚚"
+                
+            print(f"{prefix} {emoji} {task_type:26}: {task_src}")
     else:
         print("└─ 🔄 Preprocessing Tasks:")
-        print("   └─ None")
+        print("   └─ 🚫 None")
 
     # If there are unmapped metadata entries, add a branch in the tree
     if unmapped_metadata:
@@ -1381,11 +1381,11 @@ def print_statistics(config: Dict[str, Any], tasks: List[Dict[str, Any]]) -> Non
             values = unmapped_metadata[key]
             is_last_key = i == len(metadata_keys) - 1
             key_prefix = "└─" if is_last_key else "├─"
-            print(f"{key_prefix} {key:28}: {len(values)} values")
+            print(f"{key_prefix} 🔑 {key:26}: {len(values)} values")
             
             for j, value in enumerate(values):
                 value_prefix = "   └─" if j == len(values) - 1 else "   ├─"
-                print(f"{' ' if is_last_key else '│'}{value_prefix} {value}")
+                print(f"{' ' if is_last_key else '│'}{value_prefix} 📌 {value}")
 
 def confirm_execution() -> bool:
     """
